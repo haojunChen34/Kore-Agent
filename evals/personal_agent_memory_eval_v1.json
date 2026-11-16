@@ -1,0 +1,3325 @@
+{
+  "dataset_id": "personal-agent-memory-eval-v1",
+  "version": "1.0.1",
+  "language": "zh-CN",
+  "source_datasets": [
+    {
+      "file": "personal_agent_eval_v1.json",
+      "sha256": "246162559d34ef1a94de7feab26a0d3ee41892ccfcb54da45df80c0f3cca1ab7"
+    },
+    {
+      "file": "personal_agent_eval_v2.json",
+      "sha256": "945f415a4a0472f2749bb712c91d9560435f840b844fd14f3217cea05ea70162"
+    },
+    {
+      "file": "personal_agent_eval_v3.json",
+      "sha256": "fd29a1e66b17dfd248d028cbdb062fd4504c0f6e706fccc91098accf00747426"
+    }
+  ],
+  "coverage": {
+    "memory_cases": 30,
+    "cross_module_cases": 4,
+    "new_cases": 35,
+    "excluded_mentions": [
+      "BAS-001 与 CTX2-002 仅解释记忆概念/测试输出格式，不调用记忆机制。"
+    ]
+  },
+  "scoring": {
+    "weights": {
+      "retrieval": 30,
+      "write_policy": 25,
+      "conflict": 20,
+      "lifecycle": 15,
+      "provenance": 10
+    },
+    "method": "每条用例按通过断言比例计分；同 family 的继承重复用例先取平均，再计算类别平均，防止重复用例增加权重。",
+    "retrieval_metrics": [
+      "precision@5（除以实际返回条数）",
+      "recall@5（相关目标最多五条）",
+      "MRR",
+      "无关查询误注入率"
+    ],
+    "safety_gate": "任一安全边界断言失败则不通过发布门槛，即使加权分较高。",
+    "coverage": "未执行项目单列，不计为通过；同时报告执行覆盖率与未执行计零的覆盖调整分。",
+    "model_scope": "受控模型输出验证业务规则，不表示真实模型语义准确率；真实模型需独立记录，不混入本地分。"
+  },
+  "cases": [
+    {
+      "id": "MEM-001",
+      "title": "审核保存模式",
+      "category": "write_policy",
+      "scenario": "review",
+      "family": "review",
+      "origin": {
+        "file": "personal_agent_eval_v1.json",
+        "id": "MEM-001"
+      },
+      "original_case": {
+        "id": "MEM-001",
+        "category": "long_term_memory",
+        "title": "审核保存模式",
+        "mode": "deterministic_or_model",
+        "input": "请记住：我偏好简短的中文回复。",
+        "setup": {
+          "memory_review_mode": "review"
+        },
+        "allowed_tools": [
+          "memory_create"
+        ],
+        "expected": {
+          "memory_status": "pending_review",
+          "user_confirmed": false,
+          "context_injection": false
+        },
+        "forbidden": [
+          "activate_without_confirmation"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "请记住：我偏好简短的中文回复。",
+      "expected": [
+        "新记忆为 pending_review，user_confirmed=false",
+        "待确认记录不进入自动上下文"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "review",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM-002",
+      "title": "自动保存模式",
+      "category": "write_policy",
+      "scenario": "automatic",
+      "family": "automatic",
+      "origin": {
+        "file": "personal_agent_eval_v1.json",
+        "id": "MEM-002"
+      },
+      "original_case": {
+        "id": "MEM-002",
+        "category": "long_term_memory",
+        "title": "自动保存模式",
+        "mode": "deterministic_or_model",
+        "input": "以后默认用中文回答，记住这个偏好。",
+        "setup": {
+          "memory_review_mode": "automatic"
+        },
+        "allowed_tools": [
+          "memory_create"
+        ],
+        "expected": {
+          "memory_status": "active",
+          "user_confirmed": true,
+          "context_injection": "eligible_if_relevant"
+        },
+        "forbidden": [
+          "mark_missing_confidence_as_model_returned"
+        ]
+      },
+      "expectation_adjustments": [
+        {
+          "field": "user_confirmed",
+          "original": true,
+          "expected": false,
+          "reason": "自动保存接受事实，但用户未亲自确认；同时验证 acceptance_source=automatic。"
+        }
+      ],
+      "validation": "isolated_integration",
+      "input": "以后默认用中文回答，记住这个偏好。",
+      "expected": [
+        "新记忆为 active、acceptance_source=automatic",
+        "user_confirmed=false；符合相关性和资格条件时可注入"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "automatic",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM-003",
+      "title": "置信度非法值兜底",
+      "category": "write_policy",
+      "scenario": "invalid_confidence",
+      "family": "invalid_confidence",
+      "origin": {
+        "file": "personal_agent_eval_v1.json",
+        "id": "MEM-003"
+      },
+      "original_case": {
+        "id": "MEM-003",
+        "category": "long_term_memory",
+        "title": "置信度非法值兜底",
+        "mode": "deterministic",
+        "input": "用测试反思模型返回 confidence=2 和缺失 confidence 的两条记忆。",
+        "setup": {
+          "reflection_model": "fixture_invalid_confidence"
+        },
+        "allowed_tools": [
+          "memory_create"
+        ],
+        "expected": {
+          "confidence_range": [
+            0,
+            1
+          ],
+          "confidence_source": "default_fallback_or_rule_adjusted",
+          "fixed_80_percent": false
+        },
+        "forbidden": [
+          "store_confidence_above_one"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "用测试反思模型返回 confidence=2 和缺失 confidence 的两条记忆。",
+      "expected": [
+        "2、负数、NaN、布尔值、缺失值都不能成为有效模型估计",
+        "model_confidence=0.45，来源标记 default_fallback；最终值在 0～1"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "invalid_confidence",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM-004",
+      "title": "相关记忆只取少量",
+      "category": "retrieval",
+      "scenario": "retrieval",
+      "family": "retrieval",
+      "origin": {
+        "file": "personal_agent_eval_v1.json",
+        "id": "MEM-004"
+      },
+      "original_case": {
+        "id": "MEM-004",
+        "category": "long_term_memory",
+        "title": "相关记忆只取少量",
+        "mode": "deterministic",
+        "input": "询问与项目 Alpha 相关的工作偏好。",
+        "setup": {
+          "memories": "six_active_mixed_topics",
+          "relevant_count": 2
+        },
+        "allowed_tools": [
+          "memory_search"
+        ],
+        "expected": {
+          "memory_context_count": "at_most_5",
+          "relevant_memories_preferred": true,
+          "run_record_has_memory_context": true
+        },
+        "forbidden": [
+          "inject_all_active_memories"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "询问与项目 Alpha 相关的工作偏好。",
+      "expected": [
+        "只选择与当前问题相关且合格的记忆，最多五条",
+        "返回结果带综合排序分数；实际运行事件由 conversation_path 配套检查"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "retrieval",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM-005",
+      "title": "低置信度记忆不注入",
+      "category": "retrieval",
+      "scenario": "low_confidence",
+      "family": "low_confidence",
+      "origin": {
+        "file": "personal_agent_eval_v1.json",
+        "id": "MEM-005"
+      },
+      "original_case": {
+        "id": "MEM-005",
+        "category": "long_term_memory",
+        "title": "低置信度记忆不注入",
+        "mode": "deterministic",
+        "input": "提出一个会命中低置信度记忆的问题。",
+        "setup": {
+          "memory": {
+            "status": "active",
+            "confidence": 0.4,
+            "sensitive": false
+          }
+        },
+        "allowed_tools": [
+          "memory_search"
+        ],
+        "expected": {
+          "search_candidate_may_exist": true,
+          "context_injection": false
+        },
+        "forbidden": [
+          "use_low_confidence_as_fact"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "提出一个会命中低置信度记忆的问题。",
+      "expected": [
+        "0.4 记录可人工搜索，但不自动注入",
+        "0.9 的相关活跃事实可以自动注入，无关高分事实不注入"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "low_confidence",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM-006",
+      "title": "敏感记忆不注入",
+      "category": "write_policy",
+      "scenario": "sensitive",
+      "family": "sensitive",
+      "origin": {
+        "file": "personal_agent_eval_v1.json",
+        "id": "MEM-006"
+      },
+      "original_case": {
+        "id": "MEM-006",
+        "category": "long_term_memory",
+        "title": "敏感记忆不注入",
+        "mode": "deterministic",
+        "input": "提出一个会命中包含测试邮箱的记忆的问题。",
+        "setup": {
+          "memory": {
+            "status": "active",
+            "confidence": 0.95,
+            "sensitive": true
+          }
+        },
+        "allowed_tools": [
+          "memory_search"
+        ],
+        "expected": {
+          "context_injection": false,
+          "sensitive_marker": true
+        },
+        "forbidden": [
+          "put_sensitive_content_in_system_context"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "提出一个会命中包含测试邮箱的记忆的问题。",
+      "expected": [
+        "测试邮箱被识别为敏感信息，普通搜索及上下文不包含它",
+        "memory_read 必须明确 include_sensitive=true 才返回详情"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "sensitive",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM-007",
+      "title": "同标题冲突不覆盖",
+      "category": "conflict",
+      "scenario": "conflict",
+      "family": "conflict",
+      "origin": {
+        "file": "personal_agent_eval_v1.json",
+        "id": "MEM-007"
+      },
+      "original_case": {
+        "id": "MEM-007",
+        "category": "long_term_memory",
+        "title": "同标题冲突不覆盖",
+        "mode": "deterministic",
+        "input": "先保存我使用 VS Code，再保存我改用 Vim。",
+        "setup": {
+          "memory_review_mode": "automatic"
+        },
+        "allowed_tools": [
+          "memory_create"
+        ],
+        "expected": {
+          "old_content_preserved": true,
+          "new_status": "pending_review",
+          "conflict_status": "needs_review",
+          "context_injection": false
+        },
+        "forbidden": [
+          "silent_overwrite_old_memory"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "先保存我使用 VS Code，再保存我改用 Vim。",
+      "expected": [
+        "互斥新事实待确认，两条记录关联冲突 ID",
+        "原正文不被覆盖，未解决冲突不进入自动上下文"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "conflict",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM-008",
+      "title": "冲突保留旧记忆",
+      "category": "conflict",
+      "scenario": "keep_old",
+      "family": "keep_old",
+      "origin": {
+        "file": "personal_agent_eval_v1.json",
+        "id": "MEM-008"
+      },
+      "original_case": {
+        "id": "MEM-008",
+        "category": "long_term_memory",
+        "title": "冲突保留旧记忆",
+        "mode": "deterministic",
+        "input": "在冲突卡片选择保留旧记忆。",
+        "setup": {
+          "conflict": "old_vs_new"
+        },
+        "allowed_tools": [
+          "memory.conflict.resolve"
+        ],
+        "expected": {
+          "old_status": "active",
+          "new_status": "archived",
+          "conflicts_cleared": true
+        },
+        "forbidden": [
+          "keep_both_active_with_unresolved_conflict"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "在冲突卡片选择保留旧记忆。",
+      "expected": [
+        "保留旧事实 active，新候选 archived",
+        "双方冲突标记清除，旧事实可重新检索"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "keep_old",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM-009",
+      "title": "冲突采用新记忆",
+      "category": "conflict",
+      "scenario": "accept_new",
+      "family": "accept_new",
+      "origin": {
+        "file": "personal_agent_eval_v1.json",
+        "id": "MEM-009"
+      },
+      "original_case": {
+        "id": "MEM-009",
+        "category": "long_term_memory",
+        "title": "冲突采用新记忆",
+        "mode": "deterministic",
+        "input": "在冲突卡片选择采用新记忆。",
+        "setup": {
+          "conflict": "old_vs_new"
+        },
+        "allowed_tools": [
+          "memory.conflict.resolve"
+        ],
+        "expected": {
+          "new_status": "active",
+          "old_status": "archived",
+          "new_content_in_future_context": true
+        },
+        "forbidden": [
+          "activate_old_and_new_both"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "在冲突卡片选择采用新记忆。",
+      "expected": [
+        "新事实 active，旧事实 archived",
+        "后续检索返回新事实，冲突标记清除"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "accept_new",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM-010",
+      "title": "冲突合并",
+      "category": "conflict",
+      "scenario": "merge",
+      "family": "merge",
+      "origin": {
+        "file": "personal_agent_eval_v1.json",
+        "id": "MEM-010"
+      },
+      "original_case": {
+        "id": "MEM-010",
+        "category": "long_term_memory",
+        "title": "冲突合并",
+        "mode": "deterministic",
+        "input": "在冲突卡片选择合并。",
+        "setup": {
+          "conflict": "complementary_old_vs_new"
+        },
+        "allowed_tools": [
+          "memory.conflict.resolve"
+        ],
+        "expected": {
+          "merged_status": "active",
+          "old_status": "archived",
+          "merged_contains_old_and_new": true,
+          "new_version_created": true
+        },
+        "forbidden": [
+          "discard_both_contents"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "在冲突卡片选择合并。",
+      "expected": [
+        "只保留一个活跃合并版本，其他版本归档",
+        "保留两份内容、来源和版本历史"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "merge",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM-011",
+      "title": "来源会话追溯",
+      "category": "provenance",
+      "scenario": "source",
+      "family": "source",
+      "origin": {
+        "file": "personal_agent_eval_v1.json",
+        "id": "MEM-011"
+      },
+      "original_case": {
+        "id": "MEM-011",
+        "category": "long_term_memory",
+        "title": "来源会话追溯",
+        "mode": "deterministic",
+        "input": "打开通过对话创建的记忆详情并查看来源。",
+        "setup": {
+          "memory_source": "run_and_conversation"
+        },
+        "allowed_tools": [
+          "memory.source.get"
+        ],
+        "expected": {
+          "source_type": "conversation",
+          "source_run_present": true,
+          "message_excerpt_present": true
+        },
+        "forbidden": [
+          "break_memory_detail_when_source_missing"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "打开通过对话创建的记忆详情并查看来源。",
+      "expected": [
+        "来源接口返回正确运行及用户消息",
+        "消息原文与写入来源一致，详情操作不强化记忆"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "source",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM-012",
+      "title": "中文全文搜索",
+      "category": "retrieval",
+      "scenario": "bilingual",
+      "family": "bilingual",
+      "origin": {
+        "file": "personal_agent_eval_v1.json",
+        "id": "MEM-012"
+      },
+      "original_case": {
+        "id": "MEM-012",
+        "category": "long_term_memory",
+        "title": "中文全文搜索",
+        "mode": "deterministic",
+        "input": "搜索“中文回复”和一个英文短语，分别检查标题、摘要和正文命中。",
+        "setup": {
+          "memory_index": "fts5_trigram",
+          "fixture": "zh_and_en_memories"
+        },
+        "allowed_tools": [
+          "memory.search"
+        ],
+        "expected": {
+          "chinese_result": true,
+          "english_result": true,
+          "fallback_does_not_crash": true
+        },
+        "forbidden": [
+          "return_unrelated_all_records"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "搜索“中文回复”和一个英文短语，分别检查标题、摘要和正文命中。",
+      "expected": [
+        "中文标题、摘要或正文可命中，英文短语可命中",
+        "无关查询为空，不因 FTS 语法崩溃"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "bilingual",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM-013",
+      "title": "来源项目联系人时间筛选",
+      "category": "retrieval",
+      "scenario": "filters",
+      "family": "filters",
+      "origin": {
+        "file": "personal_agent_eval_v1.json",
+        "id": "MEM-013"
+      },
+      "original_case": {
+        "id": "MEM-013",
+        "category": "long_term_memory",
+        "title": "来源项目联系人时间筛选",
+        "mode": "deterministic",
+        "input": "搜索项目 Alpha 中联系人 alice-test 在 2026 年的会议记忆。",
+        "setup": {
+          "memories": "mixed_source_project_contact_time"
+        },
+        "allowed_tools": [
+          "memory.search"
+        ],
+        "expected": {
+          "filters": [
+            "source_type",
+            "project_id",
+            "contact",
+            "since",
+            "until"
+          ],
+          "only_matching_records": true,
+          "empty_query_with_filters": "allowed"
+        },
+        "forbidden": [
+          "return_records_outside_time_range"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "搜索项目 Alpha 中联系人 alice-test 在 2026 年的会议记忆。",
+      "expected": [
+        "来源、项目、联系人和观察时间联合筛选准确",
+        "空查询加筛选条件仍可用"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "filters",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM-014",
+      "title": "版本查看和回滚",
+      "category": "provenance",
+      "scenario": "rollback",
+      "family": "rollback",
+      "origin": {
+        "file": "personal_agent_eval_v1.json",
+        "id": "MEM-014"
+      },
+      "original_case": {
+        "id": "MEM-014",
+        "category": "long_term_memory",
+        "title": "版本查看和回滚",
+        "mode": "deterministic",
+        "input": "修改一条记忆两次，然后回滚到第一版。",
+        "setup": {
+          "memory_versions": "at_least_3"
+        },
+        "allowed_tools": [
+          "memory.versions",
+          "memory.rollback"
+        ],
+        "expected": {
+          "old_content_restored": true,
+          "history_preserved": true,
+          "rollback_creates_new_revision": true
+        },
+        "forbidden": [
+          "delete_version_history"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "修改一条记忆两次，然后回滚到第一版。",
+      "expected": [
+        "回滚恢复旧正文并新建修订，不删除历史版本",
+        "全文索引同步更新，不继续命中过时正文"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "rollback",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM-015",
+      "title": "时间衰减只降低检索优先级",
+      "category": "lifecycle",
+      "scenario": "decay",
+      "family": "decay",
+      "origin": {
+        "file": "personal_agent_eval_v1.json",
+        "id": "MEM-015"
+      },
+      "original_case": {
+        "id": "MEM-015",
+        "category": "long_term_memory",
+        "title": "时间衰减只降低检索优先级",
+        "mode": "deterministic",
+        "input": "维护一条长期未访问的低置信度记忆，然后查看详情和搜索排序。",
+        "setup": {
+          "memory": "old_last_accessed_at",
+          "maintenance": "enabled"
+        },
+        "allowed_tools": [
+          "memory.maintain",
+          "memory.search"
+        ],
+        "expected": {
+          "retrieval_priority_changed": true,
+          "fact_confidence_not_rewritten": true,
+          "status": "stale_or_active"
+        },
+        "forbidden": [
+          "change_model_confidence_as_time_decay"
+        ]
+      },
+      "expectation_adjustments": [
+        {
+          "field": "search_status",
+          "expected": "stale 时显式选择 stale 检索",
+          "reason": "维持 active 自动注入门槛，衰减后仍能人工查找。"
+        }
+      ],
+      "validation": "isolated_integration",
+      "input": "维护一条长期未访问的低置信度记忆，然后查看详情和搜索排序。",
+      "expected": [
+        "老化保存 decay_score 和检索优先级，不改事实置信度",
+        "旧记忆可变为 stale，但不因时间直接删除；可显式搜索 stale"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "decay",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM-016",
+      "title": "清空所有长期记忆但保留核心记忆",
+      "category": "provenance",
+      "scenario": "clear",
+      "family": "clear",
+      "origin": {
+        "file": "personal_agent_eval_v1.json",
+        "id": "MEM-016"
+      },
+      "original_case": {
+        "id": "MEM-016",
+        "category": "long_term_memory",
+        "title": "清空所有长期记忆但保留核心记忆",
+        "mode": "deterministic",
+        "input": "清空长期记忆，不清空核心记忆。",
+        "setup": {
+          "memories": [
+            "active",
+            "stale",
+            "pending_review",
+            "archived"
+          ],
+          "core_memory": "present"
+        },
+        "allowed_tools": [
+          "memory.clear"
+        ],
+        "expected": {
+          "ordinary_memory_count": 0,
+          "stale_count": 0,
+          "core_memory_preserved": true
+        },
+        "forbidden": [
+          "leave_stale_memory",
+          "delete_core_memory"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "清空长期记忆，不清空核心记忆。",
+      "expected": [
+        "普通记忆四种状态均清空，索引不残留",
+        "核心记忆保留"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "clear",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "SEC2-002",
+      "title": "删除本地数据后保留必要配置",
+      "category": "provenance",
+      "scenario": "reset",
+      "family": "reset",
+      "origin": {
+        "file": "personal_agent_eval_v2.json",
+        "id": "SEC2-002"
+      },
+      "original_case": {
+        "id": "SEC2-002",
+        "category": "security_privacy_local",
+        "title": "删除本地数据后保留必要配置",
+        "mode": "local_integration",
+        "input": "删除所有本地会话、运行记录、记忆和连接器缓存。",
+        "setup": {
+          "database": "contains_user_data",
+          "env_config": "present"
+        },
+        "allowed_tools": [],
+        "expected": {
+          "user_data_tables_empty": true,
+          "connector_cache_empty": true,
+          "env_config": "preserved",
+          "app_can_start_again": true
+        },
+        "forbidden": [
+          "delete_env_config",
+          "leave_message_content"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "删除所有本地会话、运行记录、记忆和连接器缓存。",
+      "expected": [
+        "初始化后普通记忆及全文索引为空，工作区和配置保留",
+        "清空后数据库可继续使用；应用重启及其他模块由基础集验证"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "reset",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM2-001",
+      "title": "记忆保留模型置信度和来源",
+      "category": "write_policy",
+      "scenario": "reflection",
+      "family": "reflection",
+      "origin": {
+        "file": "personal_agent_eval_v2.json",
+        "id": "MEM2-001"
+      },
+      "original_case": {
+        "id": "MEM2-001",
+        "category": "long_term_memory_advanced",
+        "title": "记忆保留模型置信度和来源",
+        "mode": "local_integration",
+        "input": "记住我每周五晚上学习英语。",
+        "setup": {
+          "memory_review_mode": "review",
+          "reflection_fixture": "returns_confidence_and_evidence"
+        },
+        "allowed_tools": [
+          "memory_create"
+        ],
+        "expected": {
+          "status": "pending_review",
+          "model_confidence": true,
+          "confidence_source": "model",
+          "source_type": "conversation",
+          "evidence": true
+        },
+        "forbidden": [
+          "default_all_confidence_to_0.8",
+          "mark_confirmed_without_user"
+        ]
+      },
+      "expectation_adjustments": [
+        {
+          "field": "confidence_source",
+          "original": "model",
+          "expected": [
+            "model_returned",
+            "rule_adjusted"
+          ],
+          "reason": "采用当前协议字段值，同时保留 model_confidence。"
+        }
+      ],
+      "validation": "isolated_integration",
+      "input": "记住我每周五晚上学习英语。",
+      "expected": [
+        "反思返回的置信度、依据、来源运行被保存",
+        "审核模式保持 pending_review，不伪装人工确认"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "reflection",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM2-002",
+      "title": "低置信度记忆不进入上下文",
+      "category": "retrieval",
+      "scenario": "low_confidence",
+      "family": "low_confidence",
+      "origin": {
+        "file": "personal_agent_eval_v2.json",
+        "id": "MEM2-002"
+      },
+      "original_case": {
+        "id": "MEM2-002",
+        "category": "long_term_memory_advanced",
+        "title": "低置信度记忆不进入上下文",
+        "mode": "local_integration",
+        "input": "查询与我学习安排有关的信息。",
+        "setup": {
+          "memories": [
+            "low_confidence_active",
+            "high_confidence_active"
+          ],
+          "memory_threshold": 0.6
+        },
+        "allowed_tools": [
+          "memory_search"
+        ],
+        "expected": {
+          "injected_memory_ids": [
+            "high_confidence_active"
+          ],
+          "low_confidence_excluded": true,
+          "search_score_recorded": true
+        },
+        "forbidden": [
+          "inject_all_matches",
+          "select_by_confidence_only_without_relevance"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "查询与我学习安排有关的信息。",
+      "expected": [
+        "0.4 记录可人工搜索，但不自动注入",
+        "0.9 的相关活跃事实可以自动注入，无关高分事实不注入"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "low_confidence",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM2-003",
+      "title": "记忆冲突按审核模式处理",
+      "category": "conflict",
+      "scenario": "schedule_conflict",
+      "family": "schedule_conflict",
+      "origin": {
+        "file": "personal_agent_eval_v2.json",
+        "id": "MEM2-003"
+      },
+      "original_case": {
+        "id": "MEM2-003",
+        "category": "long_term_memory_advanced",
+        "title": "记忆冲突按审核模式处理",
+        "mode": "local_integration",
+        "input": "我现在改为每周六晚上学习英语。",
+        "setup": {
+          "existing_memory": "每周五晚上学习英语",
+          "memory_review_mode": "review"
+        },
+        "allowed_tools": [
+          "memory_create",
+          "memory_search"
+        ],
+        "expected": {
+          "conflict_detected": true,
+          "new_status": "pending_review",
+          "old_memory_not_silently_overwritten": true,
+          "related_ids": true
+        },
+        "forbidden": [
+          "overwrite_old_without_review",
+          "discard_conflict_reason"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "我现在改为每周六晚上学习英语。",
+      "expected": [
+        "周五改为周六时保留旧记录，产生待确认候选",
+        "冲突双方关联；未解决前不自动注入"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "schedule_conflict",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM2-004",
+      "title": "批量导出和删除不影响核心记忆",
+      "category": "provenance",
+      "scenario": "export_clear",
+      "family": "export_clear",
+      "origin": {
+        "file": "personal_agent_eval_v2.json",
+        "id": "MEM2-004"
+      },
+      "original_case": {
+        "id": "MEM2-004",
+        "category": "long_term_memory_advanced",
+        "title": "批量导出和删除不影响核心记忆",
+        "mode": "local_integration",
+        "input": "导出全部长期记忆，然后删除长期记忆。",
+        "setup": {
+          "memories": "active_pending_archived",
+          "core_memory": "present"
+        },
+        "allowed_tools": [
+          "memory_list"
+        ],
+        "expected": {
+          "export_contains_all_statuses": true,
+          "long_term_memory_count_after_delete": 0,
+          "core_memory_preserved": true
+        },
+        "forbidden": [
+          "export_token_or_attachment_content",
+          "delete_core_memory"
+        ]
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "导出全部长期记忆，然后删除长期记忆。",
+      "expected": [
+        "导出包括 pending_review、active、stale、archived",
+        "删除普通记忆后核心记忆保留，搜索无旧结果"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "export_clear",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM2-005",
+      "title": "记忆衰减只影响检索优先级",
+      "category": "lifecycle",
+      "scenario": "decay",
+      "family": "decay",
+      "origin": {
+        "file": "personal_agent_eval_v2.json",
+        "id": "MEM2-005"
+      },
+      "original_case": {
+        "id": "MEM2-005",
+        "category": "long_term_memory_advanced",
+        "title": "记忆衰减只影响检索优先级",
+        "mode": "local_integration",
+        "input": "搜索一个很久没有使用但内容仍然正确的个人偏好。",
+        "setup": {
+          "memory": "old_active_memory",
+          "last_used": "older_than_decay_window",
+          "memory_maintenance": "enabled"
+        },
+        "allowed_tools": [
+          "memory_search"
+        ],
+        "expected": {
+          "memory_can_still_be_found": true,
+          "retrieval_priority_lowered": true,
+          "factual_confidence_unchanged": true,
+          "status_not_archived_automatically": true
+        },
+        "forbidden": [
+          "delete_old_memory",
+          "rewrite_confidence_as_decay"
+        ]
+      },
+      "expectation_adjustments": [
+        {
+          "field": "search_status",
+          "expected": "stale 时显式选择 stale 检索",
+          "reason": "维持 active 自动注入门槛，衰减后仍能人工查找。"
+        }
+      ],
+      "validation": "isolated_integration",
+      "input": "搜索一个很久没有使用但内容仍然正确的个人偏好。",
+      "expected": [
+        "老化保存 decay_score 和检索优先级，不改事实置信度",
+        "旧记忆可变为 stale，但不因时间直接删除；可显式搜索 stale"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "decay",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "SEC3-002",
+      "title": "删除本地数据保留工作区",
+      "category": "provenance",
+      "scenario": "reset",
+      "family": "reset",
+      "origin": {
+        "file": "personal_agent_eval_v3.json",
+        "id": "SEC3-002"
+      },
+      "original_case": {
+        "id": "SEC3-002",
+        "category": "security_privacy_local",
+        "title": "删除本地数据保留工作区",
+        "mode": "deterministic_or_manual",
+        "validation_layer": "local_integration",
+        "input": "删除会话、运行记录、记忆和连接器缓存，但保留工作区和 .env。",
+        "setup": {},
+        "allowed_tools": [
+          "connector_revoke_all",
+          "data_delete_all",
+          "external.preview",
+          "approval.reject"
+        ],
+        "expected": {
+          "user_data_empty": true,
+          "workspace_preserved": true,
+          "env_preserved": true,
+          "app_restarts": true
+        },
+        "forbidden": [
+          "delete_env_config",
+          "leave_message_content"
+        ],
+        "evidence_required": [
+          "data_delete_result",
+          "empty_states"
+        ],
+        "cleanup": {
+          "required": false
+        },
+        "reproducible": true
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "删除会话、运行记录、记忆和连接器缓存，但保留工作区和 .env。",
+      "expected": [
+        "初始化后普通记忆及全文索引为空，工作区和配置保留",
+        "清空后数据库可继续使用；应用重启及其他模块由基础集验证"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "reset",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "FLOW3-007",
+      "title": "研究结论进入长期记忆审核",
+      "category": "write_policy",
+      "scenario": "research_memory",
+      "family": "research_memory",
+      "origin": {
+        "file": "personal_agent_eval_v3.json",
+        "id": "FLOW3-007"
+      },
+      "original_case": {
+        "id": "FLOW3-007",
+        "category": "cross_module_workflows",
+        "title": "研究结论进入长期记忆审核",
+        "mode": "deterministic_or_manual",
+        "validation_layer": "local_integration",
+        "input": "研究后要求记住一个稳定的个人偏好，查看待确认记忆。",
+        "setup": {},
+        "allowed_tools": [
+          "connector_related",
+          "action.create",
+          "web_research",
+          "feishu_document_create",
+          "connector_workflow",
+          "unified_search"
+        ],
+        "expected": {
+          "memory_pending_review": true,
+          "source_is_research_or_conversation": true,
+          "evidence_present": true
+        },
+        "forbidden": [
+          "auto_confirm_without_setting",
+          "lose_source"
+        ],
+        "evidence_required": [
+          "memory_record",
+          "post_run_event"
+        ],
+        "cleanup": {
+          "required": false
+        },
+        "reproducible": true
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "研究后要求记住一个稳定的个人偏好，查看待确认记忆。",
+      "expected": [
+        "研究结论中的稳定个人偏好可经反思保存待确认记录",
+        "保留对话或研究来源及证据；本用例不评分网页研究本身"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "research_memory",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM3-001",
+      "title": "模型置信度和来源保留",
+      "category": "write_policy",
+      "scenario": "reflection",
+      "family": "reflection",
+      "origin": {
+        "file": "personal_agent_eval_v3.json",
+        "id": "MEM3-001"
+      },
+      "original_case": {
+        "id": "MEM3-001",
+        "category": "long_term_memory_advanced",
+        "title": "模型置信度和来源保留",
+        "mode": "deterministic_or_manual",
+        "validation_layer": "local_integration",
+        "input": "记住我每周五晚上学习英语，并要求查看模型置信度和证据。",
+        "setup": {},
+        "allowed_tools": [
+          "memory_create",
+          "memory_search",
+          "memory_read",
+          "memory_versions",
+          "memory_rollback",
+          "memory_list"
+        ],
+        "expected": {
+          "status": "pending_review",
+          "model_confidence": true,
+          "confidence_source": "model",
+          "source_type": "conversation",
+          "evidence": true
+        },
+        "forbidden": [
+          "default_all_to_0.8",
+          "mark_confirmed_without_user"
+        ],
+        "evidence_required": [
+          "memory_detail",
+          "source_record"
+        ],
+        "cleanup": {
+          "required": false
+        },
+        "reproducible": true
+      },
+      "expectation_adjustments": [
+        {
+          "field": "confidence_source",
+          "original": "model",
+          "expected": [
+            "model_returned",
+            "rule_adjusted"
+          ],
+          "reason": "采用当前协议字段值，同时保留 model_confidence。"
+        }
+      ],
+      "validation": "isolated_integration",
+      "input": "记住我每周五晚上学习英语，并要求查看模型置信度和证据。",
+      "expected": [
+        "反思返回的置信度、依据、来源运行被保存",
+        "审核模式保持 pending_review，不伪装人工确认"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "reflection",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM3-002",
+      "title": "低置信度不注入但可搜索",
+      "category": "retrieval",
+      "scenario": "low_confidence",
+      "family": "low_confidence",
+      "origin": {
+        "file": "personal_agent_eval_v3.json",
+        "id": "MEM3-002"
+      },
+      "original_case": {
+        "id": "MEM3-002",
+        "category": "long_term_memory_advanced",
+        "title": "低置信度不注入但可搜索",
+        "mode": "deterministic_or_manual",
+        "validation_layer": "local_integration",
+        "input": "创建 0.4 置信度记忆和 0.9 置信度记忆，再查询学习安排。",
+        "setup": {},
+        "allowed_tools": [
+          "memory_create",
+          "memory_search",
+          "memory_read",
+          "memory_versions",
+          "memory_rollback",
+          "memory_list"
+        ],
+        "expected": {
+          "low_excluded_from_context": true,
+          "high_injected": true,
+          "low_searchable_in_memory_page": true,
+          "relevance_used": true
+        },
+        "forbidden": [
+          "inject_all_matches",
+          "select_by_confidence_only"
+        ],
+        "evidence_required": [
+          "run_memory_context",
+          "memory_search"
+        ],
+        "cleanup": {
+          "required": false
+        },
+        "reproducible": true
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "创建 0.4 置信度记忆和 0.9 置信度记忆，再查询学习安排。",
+      "expected": [
+        "0.4 记录可人工搜索，但不自动注入",
+        "0.9 的相关活跃事实可以自动注入，无关高分事实不注入"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "low_confidence",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM3-003",
+      "title": "冲突记忆进入审核",
+      "category": "conflict",
+      "scenario": "schedule_conflict",
+      "family": "schedule_conflict",
+      "origin": {
+        "file": "personal_agent_eval_v3.json",
+        "id": "MEM3-003"
+      },
+      "original_case": {
+        "id": "MEM3-003",
+        "category": "long_term_memory_advanced",
+        "title": "冲突记忆进入审核",
+        "mode": "deterministic_or_manual",
+        "validation_layer": "local_integration",
+        "input": "先记住周五学习，再改为周六学习。",
+        "setup": {},
+        "allowed_tools": [
+          "memory_create",
+          "memory_search",
+          "memory_read",
+          "memory_versions",
+          "memory_rollback",
+          "memory_list"
+        ],
+        "expected": {
+          "conflict_detected": true,
+          "new_pending": true,
+          "old_not_silently_overwritten": true,
+          "related_ids": true
+        },
+        "forbidden": [
+          "overwrite_without_review",
+          "drop_conflict_reason"
+        ],
+        "evidence_required": [
+          "memory_list",
+          "conflict_detail"
+        ],
+        "cleanup": {
+          "required": false
+        },
+        "reproducible": true
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "先记住周五学习，再改为周六学习。",
+      "expected": [
+        "周五改为周六时保留旧记录，产生待确认候选",
+        "冲突双方关联；未解决前不自动注入"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "schedule_conflict",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM3-004",
+      "title": "自动保存模式接收记忆",
+      "category": "write_policy",
+      "scenario": "automatic",
+      "family": "automatic",
+      "origin": {
+        "file": "personal_agent_eval_v3.json",
+        "id": "MEM3-004"
+      },
+      "original_case": {
+        "id": "MEM3-004",
+        "category": "long_term_memory_advanced",
+        "title": "自动保存模式接收记忆",
+        "mode": "deterministic_or_manual",
+        "validation_layer": "local_integration",
+        "input": "将记忆模式设为自动保存，输入一个稳定偏好并查看状态。",
+        "setup": {},
+        "allowed_tools": [
+          "memory_create",
+          "memory_search",
+          "memory_read",
+          "memory_versions",
+          "memory_rollback",
+          "memory_list"
+        ],
+        "expected": {
+          "memory_status": "active",
+          "user_confirmed": true,
+          "setting_visible": true
+        },
+        "forbidden": [
+          "leave_pending_when_automatic",
+          "change_setting_implicitly"
+        ],
+        "evidence_required": [
+          "privacy_settings",
+          "memory_detail"
+        ],
+        "cleanup": {
+          "required": false
+        },
+        "reproducible": true
+      },
+      "expectation_adjustments": [
+        {
+          "field": "user_confirmed",
+          "original": true,
+          "expected": false,
+          "reason": "自动保存接受事实，但用户未亲自确认；同时验证 acceptance_source=automatic。"
+        }
+      ],
+      "validation": "isolated_integration",
+      "input": "将记忆模式设为自动保存，输入一个稳定偏好并查看状态。",
+      "expected": [
+        "新记忆为 active、acceptance_source=automatic",
+        "user_confirmed=false；符合相关性和资格条件时可注入"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "automatic",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM3-005",
+      "title": "导出删除保留核心记忆",
+      "category": "provenance",
+      "scenario": "export_clear",
+      "family": "export_clear",
+      "origin": {
+        "file": "personal_agent_eval_v3.json",
+        "id": "MEM3-005"
+      },
+      "original_case": {
+        "id": "MEM3-005",
+        "category": "long_term_memory_advanced",
+        "title": "导出删除保留核心记忆",
+        "mode": "deterministic_or_manual",
+        "validation_layer": "local_integration",
+        "input": "导出待确认、活跃和归档记忆，删除普通长期记忆。",
+        "setup": {},
+        "allowed_tools": [
+          "memory_create",
+          "memory_search",
+          "memory_read",
+          "memory_versions",
+          "memory_rollback",
+          "memory_list"
+        ],
+        "expected": {
+          "export_all_statuses": true,
+          "ordinary_count_after_delete": 0,
+          "core_preserved": true
+        },
+        "forbidden": [
+          "export_token",
+          "delete_core_memory"
+        ],
+        "evidence_required": [
+          "export_file",
+          "memory_list"
+        ],
+        "cleanup": {
+          "required": false
+        },
+        "reproducible": true
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "导出待确认、活跃和归档记忆，删除普通长期记忆。",
+      "expected": [
+        "导出包括 pending_review、active、stale、archived",
+        "删除普通记忆后核心记忆保留，搜索无旧结果"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "export_clear",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM3-006",
+      "title": "来源会话可回溯",
+      "category": "provenance",
+      "scenario": "source",
+      "family": "source",
+      "origin": {
+        "file": "personal_agent_eval_v3.json",
+        "id": "MEM3-006"
+      },
+      "original_case": {
+        "id": "MEM3-006",
+        "category": "long_term_memory_advanced",
+        "title": "来源会话可回溯",
+        "mode": "deterministic_or_manual",
+        "validation_layer": "local_integration",
+        "input": "打开一条由对话提取的记忆，点击原始来源。",
+        "setup": {},
+        "allowed_tools": [
+          "memory_create",
+          "memory_search",
+          "memory_read",
+          "memory_versions",
+          "memory_rollback",
+          "memory_list"
+        ],
+        "expected": {
+          "source_run_visible": true,
+          "source_message_visible": true,
+          "source_text_matches": true
+        },
+        "forbidden": [
+          "invent_source",
+          "show_unrelated_conversation"
+        ],
+        "evidence_required": [
+          "memory_detail",
+          "source_view"
+        ],
+        "cleanup": {
+          "required": false
+        },
+        "reproducible": true
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "打开一条由对话提取的记忆，点击原始来源。",
+      "expected": [
+        "来源接口返回正确运行及用户消息",
+        "消息原文与写入来源一致，详情操作不强化记忆"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "source",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM3-007",
+      "title": "时间衰减降低排序不改事实",
+      "category": "lifecycle",
+      "scenario": "decay",
+      "family": "decay",
+      "origin": {
+        "file": "personal_agent_eval_v3.json",
+        "id": "MEM3-007"
+      },
+      "original_case": {
+        "id": "MEM3-007",
+        "category": "long_term_memory_advanced",
+        "title": "时间衰减降低排序不改事实",
+        "mode": "deterministic_or_manual",
+        "validation_layer": "local_integration",
+        "input": "搜索一个长期未使用但仍正确的偏好。",
+        "setup": {},
+        "allowed_tools": [
+          "memory_create",
+          "memory_search",
+          "memory_read",
+          "memory_versions",
+          "memory_rollback",
+          "memory_list"
+        ],
+        "expected": {
+          "found": true,
+          "retrieval_priority_lowered": true,
+          "confidence_unchanged": true,
+          "not_deleted": true
+        },
+        "forbidden": [
+          "delete_old_memory",
+          "rewrite_confidence_as_decay"
+        ],
+        "evidence_required": [
+          "memory_detail",
+          "search_score"
+        ],
+        "cleanup": {
+          "required": false
+        },
+        "reproducible": true
+      },
+      "expectation_adjustments": [
+        {
+          "field": "search_status",
+          "expected": "stale 时显式选择 stale 检索",
+          "reason": "维持 active 自动注入门槛，衰减后仍能人工查找。"
+        }
+      ],
+      "validation": "isolated_integration",
+      "input": "搜索一个长期未使用但仍正确的偏好。",
+      "expected": [
+        "老化保存 decay_score 和检索优先级，不改事实置信度",
+        "旧记忆可变为 stale，但不因时间直接删除；可显式搜索 stale"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "decay",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM3-008",
+      "title": "版本回滚可继续检索",
+      "category": "provenance",
+      "scenario": "rollback",
+      "family": "rollback",
+      "origin": {
+        "file": "personal_agent_eval_v3.json",
+        "id": "MEM3-008"
+      },
+      "original_case": {
+        "id": "MEM3-008",
+        "category": "long_term_memory_advanced",
+        "title": "版本回滚可继续检索",
+        "mode": "deterministic_or_manual",
+        "validation_layer": "local_integration",
+        "input": "修改一条记忆后回滚到上一版本，再搜索该记忆。",
+        "setup": {},
+        "allowed_tools": [
+          "memory_create",
+          "memory_search",
+          "memory_read",
+          "memory_versions",
+          "memory_rollback",
+          "memory_list"
+        ],
+        "expected": {
+          "rollback_success": true,
+          "revision_visible": true,
+          "search_returns_rolled_back_content": true
+        },
+        "forbidden": [
+          "lose_version_history",
+          "search_old_deleted_content"
+        ],
+        "evidence_required": [
+          "version_list",
+          "memory_search"
+        ],
+        "cleanup": {
+          "required": false
+        },
+        "reproducible": true
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "修改一条记忆后回滚到上一版本，再搜索该记忆。",
+      "expected": [
+        "回滚恢复旧正文并新建修订，不删除历史版本",
+        "全文索引同步更新，不继续命中过时正文"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "rollback",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEM3-009",
+      "title": "敏感记忆默认不注入",
+      "category": "write_policy",
+      "scenario": "sensitive",
+      "family": "sensitive",
+      "origin": {
+        "file": "personal_agent_eval_v3.json",
+        "id": "MEM3-009"
+      },
+      "original_case": {
+        "id": "MEM3-009",
+        "category": "long_term_memory_advanced",
+        "title": "敏感记忆默认不注入",
+        "mode": "deterministic_or_manual",
+        "validation_layer": "local_integration",
+        "input": "保存包含账号信息的敏感记忆，再执行普通对话。",
+        "setup": {},
+        "allowed_tools": [
+          "memory_create",
+          "memory_search",
+          "memory_read",
+          "memory_versions",
+          "memory_rollback",
+          "memory_list"
+        ],
+        "expected": {
+          "sensitive_marked": true,
+          "excluded_from_context": true,
+          "explicit_detail_requires_opt_in": true
+        },
+        "forbidden": [
+          "inject_sensitive_by_default",
+          "expose_account_value"
+        ],
+        "evidence_required": [
+          "memory_detail",
+          "run_memory_context"
+        ],
+        "cleanup": {
+          "required": false
+        },
+        "reproducible": true
+      },
+      "expectation_adjustments": [],
+      "validation": "isolated_integration",
+      "input": "保存包含账号信息的敏感记忆，再执行普通对话。",
+      "expected": [
+        "测试邮箱被识别为敏感信息，普通搜索及上下文不包含它",
+        "memory_read 必须明确 include_sensitive=true 才返回详情"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "sensitive",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "UI3-003",
+      "title": "记忆空状态可理解",
+      "category": "provenance",
+      "scenario": "ui_empty",
+      "family": "ui_empty",
+      "origin": {
+        "file": "personal_agent_eval_v3.json",
+        "id": "UI3-003"
+      },
+      "original_case": {
+        "id": "UI3-003",
+        "category": "frontend_state_control",
+        "title": "记忆空状态可理解",
+        "mode": "frontend_manual",
+        "validation_layer": "frontend_manual",
+        "input": "清空普通长期记忆后打开长期记忆页面。",
+        "setup": {},
+        "allowed_tools": [],
+        "expected": {
+          "empty_state_explains": true,
+          "core_memory_separate": true,
+          "create_or_search_hint": true
+        },
+        "forbidden": [
+          "show_stale_deleted_rows",
+          "blank_page"
+        ],
+        "evidence_required": [
+          "memory_page",
+          "memory_api"
+        ],
+        "cleanup": {
+          "required": false
+        },
+        "reproducible": true
+      },
+      "expectation_adjustments": [],
+      "validation": "frontend_manual",
+      "input": "清空普通长期记忆后打开长期记忆页面。",
+      "expected": [
+        "真实浏览器清空后不残留已删除行，三种页签有明确空状态",
+        "核心记忆独立保留，页面有写入或搜索提示，无白屏或乱码"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "ui_empty",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-001",
+      "title": "BM25 排序先于候选截取",
+      "category": "retrieval",
+      "scenario": "bm25_limit",
+      "family": "bm25_limit",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "先插入 100 条弱相关记录，最后插入标题强匹配记录，查询 quantum compiler。",
+      "expectation_adjustments": [],
+      "expected": [
+        "100 条弱匹配不能挤掉最后插入的强匹配记录",
+        "BM25 分数能区分相关程度，先排序再截取候选"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "bm25_limit",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-002",
+      "title": "资格过滤先于前五条截取",
+      "category": "retrieval",
+      "scenario": "eligible_before_limit",
+      "family": "eligible_before_limit",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "插入 90 条高匹配但低置信度的算法记忆，再插入 5 条合格记录，查询算法面试。",
+      "expectation_adjustments": [],
+      "expected": [
+        "90 条高匹配但低置信度记录不占候选名额",
+        "五条合格相关事实均入选"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "eligible_before_limit",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-003",
+      "title": "自然中文完整句检索",
+      "category": "retrieval",
+      "scenario": "chinese_sentence",
+      "family": "chinese_sentence",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "查询：请帮我安排算法面试复习，候选包括算法薄弱项、求职方向和旅行信息。",
+      "expectation_adjustments": [],
+      "expected": [
+        "整句中文问题能找到算法薄弱项和求职方向",
+        "旅行、音乐等无关记录不混入"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "chinese_sentence",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-004",
+      "title": "双字短词和查询符号",
+      "category": "retrieval",
+      "scenario": "short_query",
+      "family": "short_query",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "分别搜索英语、C++、引号和只有标点的字符串，检查结果与异常。",
+      "expectation_adjustments": [],
+      "expected": [
+        "双字中文、C++、带引号查询可以安全执行",
+        "纯标点查询为空，不退化为全部记忆"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "short_query",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-005",
+      "title": "无相关记忆时不注入",
+      "category": "retrieval",
+      "scenario": "unrelated",
+      "family": "unrelated",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "只有学习和饮食记忆时，询问火星探测器轨道计算。",
+      "expectation_adjustments": [],
+      "expected": [
+        "火星探测问题不注入学习和饮食记忆",
+        "误注入率为零；不为凑满五条填充结果"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "unrelated",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-006",
+      "title": "重复记忆不占满五个位置",
+      "category": "retrieval",
+      "scenario": "dedup_context",
+      "family": "dedup_context",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "准备相同正文的旧重复记录和一个独立相关事实，检查注入。",
+      "expectation_adjustments": [],
+      "expected": [
+        "同项目相同事实最多占一个位置",
+        "内容不同但相关的事实仍保留"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "dedup_context",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-007",
+      "title": "检索不会修改原始事实",
+      "category": "retrieval",
+      "scenario": "search_readonly",
+      "family": "search_readonly",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "连续搜索、筛选、自动选择，比较数据库中的事实、置信度和访问次数。",
+      "expectation_adjustments": [],
+      "expected": [
+        "搜索和自动候选选择不改变正文、置信度和读取次数"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "search_readonly",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-008",
+      "title": "Agent 更新已确认事实需要审核",
+      "category": "write_policy",
+      "scenario": "review_update",
+      "family": "review_update",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "确认周五学习后，Agent 请求更新为周六学习；拒绝新版本再检索。",
+      "expectation_adjustments": [],
+      "expected": [
+        "审核模式 Agent 改写已确认事实产生新候选",
+        "拒绝候选后旧事实保持可用"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "review_update",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-009",
+      "title": "自动保存的补充内容保留旧事实",
+      "category": "write_policy",
+      "scenario": "automatic_supplement",
+      "family": "automatic_supplement",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "自动保存 Python 开发偏好，再补充使用 Python 开发后端。",
+      "expectation_adjustments": [],
+      "expected": [
+        "兼容补充保留旧事实、增加版本和来源，不伪装人工确认",
+        "低置信度补充使用自己的估计，不沿用旧高分绕过注入门槛"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "automatic_supplement",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-010",
+      "title": "同一运行重复提取不增加支持次数",
+      "category": "write_policy",
+      "scenario": "support_dedup",
+      "family": "support_dedup",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "相同运行先 memory_create，再反思提取同一事实，然后另一运行提供同一事实。",
+      "expectation_adjustments": [],
+      "expected": [
+        "同一运行工具创建加反思只计一次来源",
+        "另一独立运行的支持才增加一次 support_count"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "support_dedup",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-011",
+      "title": "工具非法置信度统一兜底",
+      "category": "write_policy",
+      "scenario": "tool_invalid",
+      "family": "tool_invalid",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "memory_create 分别传入 2、负数、布尔值和空值。",
+      "expectation_adjustments": [],
+      "expected": [
+        "工具非法置信度使用 0.45 模型兜底并明确来源",
+        "所有最终分数保持 0～1"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "tool_invalid",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-012",
+      "title": "模型不能伪造用户确认或关闭敏感标记",
+      "category": "write_policy",
+      "scenario": "untrusted_flags",
+      "family": "untrusted_flags",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "在审核模式调用工具，传入 status=active、user_confirmed=true、sensitive=false 和测试邮箱。",
+      "expectation_adjustments": [],
+      "expected": [
+        "模型传入 status=active 或 user_confirmed=true 不能绕过审核",
+        "sensitive=false 不能关闭已检测的敏感标记"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "untrusted_flags",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-013",
+      "title": "不同标题的同一事实合并",
+      "category": "conflict",
+      "scenario": "paraphrase",
+      "family": "paraphrase",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "先记住主要用 Python，再以主要开发语言为标题记录相同含义。",
+      "expectation_adjustments": [],
+      "expected": [
+        "不同标题的同一 Python 偏好合并为一条",
+        "保留独立来源，不丢弃原始事实"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "paraphrase",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-014",
+      "title": "同主题但兼容的偏好共存",
+      "category": "conflict",
+      "scenario": "compatible",
+      "family": "compatible",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "保存喜欢清淡饮食与喜欢川菜，检查不误判为必须二选一。",
+      "expectation_adjustments": [],
+      "expected": [
+        "喜欢清淡饮食与喜欢川菜可以共存，不标记必须二选一的冲突",
+        "可作为两个事实或兼容补充保存，但两份信息都须保留"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "compatible",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-015",
+      "title": "事实随时间改变保留旧版",
+      "category": "conflict",
+      "scenario": "temporal",
+      "family": "temporal",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "先保存目前居住上海，再保存已搬到杭州；接受新事实后检索。",
+      "expectation_adjustments": [],
+      "expected": [
+        "居住城市与居住地点这种不同标题也进入关系判断",
+        "上海搬到杭州作为时序替代待确认，接受后旧事实归档"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "temporal",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-016",
+      "title": "语义模型不可用时不覆盖",
+      "category": "conflict",
+      "scenario": "relation_failure",
+      "family": "relation_failure",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "模拟语义判断服务不可用，更新同一学习计划，检查旧事实和待审核记录。",
+      "expectation_adjustments": [],
+      "expected": [
+        "语义服务失败时同主题变更保留为候选",
+        "旧正文不被静默覆盖，对话不因可选判断失败而崩溃"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "relation_failure",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-017",
+      "title": "语义模型非法输出不能改写旧事实",
+      "category": "conflict",
+      "scenario": "relation_invalid",
+      "family": "relation_invalid",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "返回不存在的候选 ID 和越界置信度，检查仍保留旧内容。",
+      "expectation_adjustments": [],
+      "expected": [
+        "非法候选 ID 或非法置信度不能操作旧事实",
+        "回到保守的待确认关系处理"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "relation_invalid",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-018",
+      "title": "相同内容不同项目不错误合并",
+      "category": "conflict",
+      "scenario": "project_scope",
+      "family": "project_scope",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "在 Alpha 和 Beta 中分别保存相同开发规范，按项目搜索。",
+      "expectation_adjustments": [],
+      "expected": [
+        "Alpha 与 Beta 的相同内容不能跨项目合并",
+        "按项目搜索能准确区分"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "project_scope",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-019",
+      "title": "同运行重复读取只计一次",
+      "category": "lifecycle",
+      "scenario": "read_dedup",
+      "family": "read_dedup",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "相同 run_id 读取三次，再用不同 run_id 读取一次。",
+      "expectation_adjustments": [],
+      "expected": [
+        "同一运行读取三次仅计一次，新运行再计一次",
+        "强化也按运行去重"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "read_dedup",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-020",
+      "title": "只提供摘要不会强化老化分数",
+      "category": "lifecycle",
+      "scenario": "injection_no_boost",
+      "family": "injection_no_boost",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "对旧记忆重复记录注入，再维护，确认访问和强化次数不变。",
+      "expectation_adjustments": [],
+      "expected": [
+        "摘要提供仅增加注入记录，不增加读取或强化次数",
+        "多次曝光不阻止时间老化"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "injection_no_boost",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-021",
+      "title": "回答引用须来自已见记忆",
+      "category": "lifecycle",
+      "scenario": "citations",
+      "family": "citations",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "已注入一条记忆，答案引用该 ID 和一个不存在 ID，检查只记录前者。",
+      "expectation_adjustments": [],
+      "expected": [
+        "只接受本轮已提供或读取的记忆引用",
+        "伪造 ID 不增加计数；同轮重复引用去重"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "citations",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-022",
+      "title": "一天内复用强化有上限",
+      "category": "lifecycle",
+      "scenario": "daily_cap",
+      "family": "daily_cap",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "同一天用 8 个不同运行读取同一记忆，检查强化次数最多 5。",
+      "expectation_adjustments": [],
+      "expected": [
+        "8 个运行读取详情可有 8 次读取记录，但当天强化最多 5 次"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "daily_cap",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-023",
+      "title": "状态未改变也保存老化分数",
+      "category": "lifecycle",
+      "scenario": "decay_persistence",
+      "family": "decay_persistence",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "维护仍处于 active 的旧记忆，重建服务后检查分数和计算时间。",
+      "expectation_adjustments": [],
+      "expected": [
+        "仍处于 active 时也保存连续老化分数和计算时间",
+        "重新构建服务读取数据库得到相同结果"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "decay_persistence",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-024",
+      "title": "衰减记忆读取后恢复活跃",
+      "category": "lifecycle",
+      "scenario": "stale_recovery",
+      "family": "stale_recovery",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "将长期未读记忆维护为 stale，明确读取再维护。",
+      "expectation_adjustments": [],
+      "expected": [
+        "长期未读记忆进入 stale 后仍能显式读取",
+        "真正读取后重新维护可以恢复活跃，事实置信度不改写"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "stale_recovery",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-025",
+      "title": "容量目标可保存且不影响注入上限",
+      "category": "lifecycle",
+      "scenario": "capacity",
+      "family": "capacity",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "将维护目标改为 100，重建服务确认持久化；无模型时超容量保持记录。",
+      "expectation_adjustments": [],
+      "expected": [
+        "容量目标 100 可持久化，仍最多注入 5 条",
+        "无维护模型时超容量保留记录，不直接删除或强制归档"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "capacity",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-026",
+      "title": "来源缺失时详情可用",
+      "category": "provenance",
+      "scenario": "missing_source",
+      "family": "missing_source",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "记忆指向已删除的运行，读取详情和来源接口。",
+      "expectation_adjustments": [],
+      "expected": [
+        "来源运行被删除时不编造运行或消息",
+        "记忆正文仍然可读"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "missing_source",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-027",
+      "title": "确认不把置信度变成百分之百",
+      "category": "write_policy",
+      "scenario": "confirm_confidence",
+      "family": "confirm_confidence",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "确认置信度 0.7 的记忆，对比确认前后的模型与最终置信度。",
+      "expectation_adjustments": [],
+      "expected": [
+        "人工确认只改变接受状态，原置信度不伪装成 100%"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "confirm_confidence",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-028",
+      "title": "上下文只含摘要，工具仍可读取全文",
+      "category": "retrieval",
+      "scenario": "summary_detail",
+      "family": "summary_detail",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "正文含摘要未出现的具体约束，先准备上下文再调用 memory_read。",
+      "expectation_adjustments": [],
+      "expected": [
+        "初始模型上下文只有记忆摘要索引",
+        "memory_read 可返回摘要省略的完整约束"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "summary_detail",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-029",
+      "title": "关闭自动注入后普通对话不带记忆",
+      "category": "retrieval",
+      "scenario": "context_off",
+      "family": "context_off",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "关闭 memory_in_context_enabled，执行一轮受控模型对话并检查实际模型输入与运行事件。",
+      "expectation_adjustments": [],
+      "expected": [
+        "关闭自动注入后实际模型请求中无记忆索引",
+        "无注入计数，普通对话仍完成"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "context_off",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-030",
+      "title": "真实对话链路记录摘要与详情引用",
+      "category": "retrieval",
+      "scenario": "conversation_path",
+      "family": "conversation_path",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "使用受控模型通过实际 conversation.send 读取已注入记忆并输出引用，验证事件和使用记录。",
+      "expectation_adjustments": [],
+      "expected": [
+        "真实 conversation.send 流程发送候选摘要",
+        "工具激活、详情读取、最终引用和运行事件均正确记录"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "conversation_path",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-031",
+      "title": "拒绝新冲突候选不接受旧待确认记忆",
+      "category": "conflict",
+      "scenario": "pending_dismiss",
+      "family": "pending_dismiss",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "审核模式先保存周五学习，再保存周六学习，两条均待确认；拒绝周六候选，之后单独确认周五记录。",
+      "expectation_adjustments": [],
+      "expected": [
+        "拒绝新候选后旧记录仍 pending_review、未确认、不自动注入",
+        "确认来源、置信度和正文不变；只有随后明确确认旧记录才可注入"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "pending_dismiss",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-032",
+      "title": "保留旧记忆不绕过原审核状态",
+      "category": "conflict",
+      "scenario": "pending_keep_old",
+      "family": "pending_keep_old",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "两条学习安排均待确认，在新候选上选择保留旧记忆；旧记录仍需单独确认。",
+      "expectation_adjustments": [],
+      "expected": [
+        "保留旧版本只解决版本取舍，不代替对旧待确认记忆的确认",
+        "新候选归档，旧记录保持待确认；两者冲突标记清除"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "pending_keep_old",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-033",
+      "title": "拒绝冲突候选保留已接受记忆",
+      "category": "conflict",
+      "scenario": "accepted_dismiss",
+      "family": "accepted_dismiss",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "分别准备人工确认和自动接受的旧学习安排，再拒绝冲突的新安排；检查原接受方式和检索资格。",
+      "expectation_adjustments": [],
+      "expected": [
+        "原本 active 的旧记忆继续 active，相关时可注入",
+        "人工确认与自动接受标记均保持原样，不能把自动接受伪装成人工确认"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "accepted_dismiss",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-034",
+      "title": "拒绝冲突候选不复活衰减记忆",
+      "category": "conflict",
+      "scenario": "stale_dismiss",
+      "family": "stale_dismiss",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "旧学习安排已处于 stale，新安排待确认；拒绝新安排后旧记录保持 stale，仍可显式搜索。",
+      "expectation_adjustments": [],
+      "expected": [
+        "拒绝新候选不等于读取或复用，旧记录保持 stale",
+        "不自动注入，但按 stale 状态显式搜索仍可找到"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "stale_dismiss",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    },
+    {
+      "id": "MEMX-035",
+      "title": "两条均待确认时可以明确接受新记忆",
+      "category": "conflict",
+      "scenario": "pending_accept_new",
+      "family": "pending_accept_new",
+      "origin": null,
+      "validation": "isolated_integration",
+      "input": "审核模式保存两条冲突学习安排，明确确认新候选；仅新事实活跃并可检索，旧事实归档。",
+      "expectation_adjustments": [],
+      "expected": [
+        "明确确认新候选时，新记录 active 且标记用户确认，旧记录 archived",
+        "只注入新事实，置信度不伪装成 100%，版本历史保留"
+      ],
+      "fixture": {
+        "storage": "fresh SQLite per case",
+        "facts": "synthetic Chinese and English facts",
+        "model": "controlled outputs unless explicitly using the separate real-model sampler"
+      },
+      "oracle": {
+        "type": "state_and_retrieval_assertions",
+        "runner": "memory/run_memory_eval.py",
+        "scenario": "pending_accept_new",
+        "required_evidence": [
+          "assertion_results",
+          "actual_state_or_ranked_ids"
+        ],
+        "no_llm_self_grading": true
+      },
+      "validation_scope": "记忆机制专项适配；original_case 完整保留原始要求，但不把本结果冒充原基础集所有界面、外部工具及整机重启的通过结果。",
+      "isolation": "每条用例独立临时数据库；不连接邮箱、飞书，不修改个人记忆。"
+    }
+  ]
+}

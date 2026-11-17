@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="820" viewBox="0 0 1600 820" role="img" aria-labelledby="title desc" font-family="'Segoe UI','Microsoft YaHei',sans-serif">
+<title id="title">KoreAgent 从个人信息到下一步行动</title><desc id="desc">一张产品场景插画：邮件、日历和工作区文件汇聚到个人工作台，经 Agent 整理后形成今日行动、目标和下一步清单。</desc>
+<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#F8FBFD"/><stop offset="1" stop-color="#ECF7F5"/></linearGradient><linearGradient id="desk" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#FFFFFF"/><stop offset="1" stop-color="#EFF7F8"/></linearGradient><filter id="shadow" x="-20%" y="-20%" width="140%" height="160%"><feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#30566A" flood-opacity=".14"/></filter><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M1 1 9 5 1 9Z" fill="#5D8B97"/></marker></defs>
+<rect x="0" y="0" width="1600" height="820" rx="0" fill="url(#bg)" stroke="none" stroke-width="2" />
+<text x="72" y="78" font-size="38" font-weight="700" fill="#173346" text-anchor="start">从信息，到下一步</text>
+<text x="72" y="116" font-size="21" font-weight="400" fill="#637A8A" text-anchor="start">KoreAgent 帮你把需要关注的内容整理成可以继续推进的行动。</text>
+<rect x="1253" y="57" width="275" height="30" rx="15" fill="#DCEFED" stroke="none" stroke-width="2" />
+<text x="1390.5" y="78" font-size="15" font-weight="600" fill="#287875" text-anchor="middle">PERSONAL WORKFLOW</text>
+<text x="90" y="185" font-size="20" font-weight="600" fill="#637A8A" text-anchor="start">你收到的信息</text>
+<rect x="78" y="214" width="352" height="118" rx="20" fill="#FFFFFF" stroke="#B9CBD6" stroke-width="2" filter="url(#shadow)"/>
+<circle cx="115" cy="251" r="24" fill="#E5F1F9" stroke="none" stroke-width="0"/>
+<g transform="translate(98 234) scale(1.4166666666666667)" fill="none" stroke="#4B7898" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m3 5 9 8 9-8"/></g>
+<text x="157" y="249" font-size="24" font-weight="650" fill="#173346" text-anchor="start">面试安排确认</text>
+<text x="157" y="280" font-size="17" font-weight="400" fill="#637A8A" text-anchor="start">请确认下周二 15:00 的会议时间</text>
+<rect x="157" y="292" width="68" height="30" rx="15" fill="#E8F1F7" stroke="none" stroke-width="2" />
+<text x="191" y="313" font-size="15" font-weight="600" fill="#4B7898" text-anchor="middle">新邮件</text>
+<rect x="78" y="362" width="352" height="118" rx="20" fill="#FFFFFF" stroke="#B9CBD6" stroke-width="2" filter="url(#shadow)"/>
+<circle cx="115" cy="399" r="24" fill="#E0F2EF" stroke="none" stroke-width="0"/>
+<g transform="translate(98 382) scale(1.4166666666666667)" fill="none" stroke="#258C86" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="17" rx="2"/><path d="M7 2v6M17 2v6M3 10h18M7 14h2M15 14h2M7 18h2"/></g>
+<text x="157" y="397" font-size="24" font-weight="650" fill="#173346" text-anchor="start">项目同步会议</text>
+<text x="157" y="428" font-size="17" font-weight="400" fill="#637A8A" text-anchor="start">明天 10:30 · 线上会议</text>
+<rect x="157" y="440" width="51" height="30" rx="15" fill="#E4F3F0" stroke="none" stroke-width="2" />
+<text x="182.5" y="461" font-size="15" font-weight="600" fill="#258C86" text-anchor="middle">日历</text>
+<rect x="78" y="510" width="352" height="118" rx="20" fill="#FFFFFF" stroke="#B9CBD6" stroke-width="2" filter="url(#shadow)"/>
+<circle cx="115" cy="547" r="24" fill="#E8EAF8" stroke="none" stroke-width="0"/>
+<g transform="translate(98 530) scale(1.4166666666666667)" fill="none" stroke="#5F6EA5" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2h10l4 4v16H5Z"/><path d="M15 2v5h5M8 12h8M8 16h6"/></g>
+<text x="157" y="545" font-size="24" font-weight="650" fill="#173346" text-anchor="start">项目说明.md</text>
+<text x="157" y="576" font-size="17" font-weight="400" fill="#637A8A" text-anchor="start">整理文档并生成一份项目报告</text>
+<rect x="157" y="588" width="63" height="30" rx="15" fill="#ECEEFA" stroke="none" stroke-width="2" />
+<text x="188.5" y="609" font-size="15" font-weight="600" fill="#5F6EA5" text-anchor="middle">工作区</text>
+<path d="M430 274C480 274 510 326 557 326" fill="none" stroke="#6B9CA4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M430 422C480 422 510 384 557 384" fill="none" stroke="#6B9CA4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M430 568C480 568 510 442 557 442" fill="none" stroke="#6B9CA4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="438" y="218" width="112" height="32" rx="16" fill="#E2F2F0" stroke="none" stroke-width="2" />
+<text x="494" y="240" font-size="16" font-weight="650" fill="#258C86" text-anchor="middle">整理与理解</text>
+<g transform="translate(541 279) scale(1.5416666666666667)" fill="none" stroke="#2F8985" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 1.9 6.1L20 10l-6.1 1.9L12 18l-1.9-6.1L4 10l6.1-1.9Z"/><path d="m19 17 .8 2.2L22 20l-2.2.8L19 23l-.8-2.2L16 20l2.2-.8Z"/></g>
+<rect x="557" y="171" width="620" height="492" rx="28" fill="url(#desk)" stroke="#A8C8CE" stroke-width="2" filter="url(#shadow)"/>
+<rect x="557" y="171" width="620" height="76" rx="28" fill="#4B8C91" stroke="none" stroke-width="2" />
+<rect x="557" y="215" width="620" height="32" rx="0" fill="#4B8C91" stroke="none" stroke-width="2" />
+<rect x="584" y="188" width="112" height="45" rx="22" fill="#E4F3F2" stroke="none" stroke-width="2" />
+<text x="640" y="219" font-size="28" font-weight="700" fill="#216A6D" text-anchor="middle">今天</text>
+<text x="1128" y="219" font-size="17" font-weight="500" fill="#EAF8F7" text-anchor="end">个人工作台</text>
+<circle cx="610" cy="283" r="24" fill="#E0F1F0" stroke="none" stroke-width="0"/>
+<g transform="translate(594 267) scale(1.3333333333333333)" fill="none" stroke="#258C86" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 1.9 6.1L20 10l-6.1 1.9L12 18l-1.9-6.1L4 10l6.1-1.9Z"/><path d="m19 17 .8 2.2L22 20l-2.2.8L19 23l-.8-2.2L16 20l2.2-.8Z"/></g>
+<text x="650" y="279" font-size="23" font-weight="650" fill="#173346" text-anchor="start">把重要的事安排好</text>
+<text x="650" y="310" font-size="17" font-weight="400" fill="#637A8A" text-anchor="start">3 条新信息 · 2 个行动 · 1 个目标</text>
+<rect x="595" y="346" width="544" height="77" rx="16" fill="#F4FAFA" stroke="#CAE5E1" stroke-width="2" />
+<g transform="translate(618 364) scale(1.3333333333333333)" fill="none" stroke="#39817F" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="14" r="8"/><circle cx="10" cy="14" r="4"/><path d="m10 14 9-9M15 3v6h6"/></g>
+<text x="664" y="377" font-size="21" font-weight="650" fill="#173346" text-anchor="start">求职准备</text>
+<text x="664" y="404" font-size="16" font-weight="400" fill="#637A8A" text-anchor="start">本周继续完成算法复习与面试准备</text>
+<rect x="1017" y="369" width="91" height="30" rx="15" fill="#DFF1EE" stroke="none" stroke-width="2" />
+<text x="1062.5" y="390" font-size="15" font-weight="600" fill="#258C86" text-anchor="middle">活跃目标</text>
+<text x="595" y="468" font-size="19" font-weight="650" fill="#637A8A" text-anchor="start">今日行动</text>
+<rect x="595" y="487" width="544" height="54" rx="13" fill="#FFFFFF" stroke="#D5E4E6" stroke-width="2" />
+<g transform="translate(618 502) scale(1.125)" fill="none" stroke="#258C86" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6"/></g>
+<text x="659" y="521" font-size="18" font-weight="550" fill="#173346" text-anchor="start">确认面试时间并准备项目介绍</text>
+<rect x="1064" y="499" width="58" height="30" rx="15" fill="#EEF3F5" stroke="none" stroke-width="2" />
+<text x="1093" y="520" font-size="15" font-weight="600" fill="#637A8A" text-anchor="middle">今天</text>
+<rect x="595" y="554" width="544" height="54" rx="13" fill="#FFFFFF" stroke="#D5E4E6" stroke-width="2" />
+<g transform="translate(618 569) scale(1.125)" fill="none" stroke="#258C86" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6"/></g>
+<text x="659" y="588" font-size="18" font-weight="550" fill="#173346" text-anchor="start">整理项目文档，生成 report.md</text>
+<rect x="1064" y="566" width="58" height="30" rx="15" fill="#EEF3F5" stroke="none" stroke-width="2" />
+<text x="1093" y="587" font-size="15" font-weight="600" fill="#637A8A" text-anchor="middle">今天</text>
+<path d="M1177 410C1215 410 1220 310 1260 310" fill="none" stroke="#6B9CA4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M1177 472C1215 472 1220 480 1260 480" fill="none" stroke="#6B9CA4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M1177 534C1215 534 1220 650 1260 650" fill="none" stroke="#6B9CA4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="1195" y="145" width="112" height="32" rx="16" fill="#E2F2F0" stroke="none" stroke-width="2" />
+<text x="1251" y="167" font-size="16" font-weight="650" fill="#258C86" text-anchor="middle">可继续推进</text>
+<rect x="1260" y="214" width="280" height="176" rx="20" fill="#FFFFFF" stroke="#B9D5D1" stroke-width="2" filter="url(#shadow)"/>
+<circle cx="1300" cy="254" r="22" fill="#E2F3F0" stroke="none" stroke-width="0"/>
+<g transform="translate(1286 240) scale(1.2083333333333333)" fill="none" stroke="#258C86" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6"/></g>
+<text x="1334" y="257" font-size="23" font-weight="650" fill="#173346" text-anchor="start">下一步</text>
+<text x="1286" y="300" font-size="17" font-weight="500" fill="#173346" text-anchor="start">回复邮件确认时间</text>
+<text x="1286" y="329" font-size="17" font-weight="500" fill="#173346" text-anchor="start">准备 3 分钟项目介绍</text>
+<rect x="1286" y="345" width="116" height="30" rx="15" fill="#E5F3F0" stroke="none" stroke-width="2" />
+<text x="1344" y="366" font-size="15" font-weight="600" fill="#258C86" text-anchor="middle">先预览，再确认</text>
+<rect x="1260" y="422" width="280" height="142" rx="20" fill="#FFFFFF" stroke="#B9D5D1" stroke-width="2" filter="url(#shadow)"/>
+<circle cx="1300" cy="460" r="22" fill="#E2F3F0" stroke="none" stroke-width="0"/>
+<g transform="translate(1286 446) scale(1.2083333333333333)" fill="none" stroke="#258C86" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="14" r="8"/><circle cx="10" cy="14" r="4"/><path d="m10 14 9-9M15 3v6h6"/></g>
+<text x="1334" y="463" font-size="23" font-weight="650" fill="#173346" text-anchor="start">目标推进</text>
+<text x="1286" y="503" font-size="17" font-weight="500" fill="#173346" text-anchor="start">阶段行动已关联</text>
+<text x="1286" y="531" font-size="17" font-weight="400" fill="#637A8A" text-anchor="start">按今天与后续安排查看</text>
+<rect x="1260" y="596" width="280" height="142" rx="20" fill="#FFFFFF" stroke="#B9D5D1" stroke-width="2" filter="url(#shadow)"/>
+<circle cx="1300" cy="634" r="22" fill="#E2F3F0" stroke="none" stroke-width="0"/>
+<g transform="translate(1286 620) scale(1.2083333333333333)" fill="none" stroke="#258C86" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 1.9 6.1L20 10l-6.1 1.9L12 18l-1.9-6.1L4 10l6.1-1.9Z"/><path d="m19 17 .8 2.2L22 20l-2.2.8L19 23l-.8-2.2L16 20l2.2-.8Z"/></g>
+<text x="1334" y="637" font-size="23" font-weight="650" fill="#173346" text-anchor="start">持续记住</text>
+<text x="1286" y="677" font-size="17" font-weight="500" fill="#173346" text-anchor="start">相关上下文按需出现</text>
+<text x="1286" y="705" font-size="17" font-weight="400" fill="#637A8A" text-anchor="start">重要信息留在你的工作流里</text>
+<path d="M84 770H1516" fill="none" stroke="#D1E2E5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+<text x="800" y="808" font-size="21" font-weight="500" fill="#637A8A" text-anchor="middle">信息进入工作台，行动回到你的日常。</text>
+</svg>

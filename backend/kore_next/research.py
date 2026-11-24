@@ -48,8 +48,10 @@ def semantic_diff_summary(before: str, after: str, *, max_chars: int = 360) -> d
     score = semantic_similarity(old, new)
     if score >= 0.985:
         return {"changed": False, "similarity": score, "summary": "正文没有明显变化"}
-    old_sentences = {item.strip() for item in re.split(r"(?<=[。！？!?\.])\s*", old) if item.strip()}
-    additions = [item.strip() for item in re.split(r"(?<=[。！？!?\.])\s*", new) if item.strip() and item.strip() not in old_sentences]
+    # A dot inside a URL, version or decimal is not a sentence boundary.
+    boundary = r"(?<=[。！？!?])\s*|(?<=\.)\s+"
+    old_sentences = {item.strip() for item in re.split(boundary, old) if item.strip()}
+    additions = [item.strip() for item in re.split(boundary, new) if item.strip() and item.strip() not in old_sentences]
     if additions:
         excerpt = "；".join(additions)[:max_chars]
         summary = f"正文新增或更新：{excerpt}"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -71,7 +72,7 @@ class McpProcess:
                 {
                     "protocolVersion": "2025-03-26",
                     "capabilities": {},
-                    "clientInfo": {"name": "koreagent-next", "version": "0.1.0"},
+                    "clientInfo": {"name": "koreagent-next", "version": "0.1.1"},
                 },
             )
             await self.notify("notifications/initialized", {})
@@ -168,7 +169,8 @@ class McpProcess:
 
 
 class McpManager:
-    def __init__(self, workspace: Path | None = None) -> None:
+    def __init__(self, workspace: Path | None = None, audit: Callable[..., Awaitable[None]] | None = None) -> None:
+        self.audit = audit
         self.servers: dict[str, McpProcess] = {}
         self.supervisor = SandboxSupervisor((workspace or Path.cwd()).resolve())
 
@@ -186,10 +188,18 @@ class McpManager:
     async def close(self) -> None:
         await asyncio.gather(*(server.close() for server in self.servers.values()), return_exceptions=True)
 
+    async def disable(self, name: str) -> None:
+        server = self.servers.get(name)
+        if server:
+            # Revoke before awaiting process shutdown so pending approvals
+            # cannot dispatch another call through an existing reference.
+            server.config["enabled"] = False
+            await server.close()
+
     def tool_definitions(self) -> list[dict[str, Any]]:
         result = []
         for server_name, server in self.servers.items():
-            if server.error:
+            if server.error or not server.config.get("enabled", True):
                 continue
             for tool in server.tools:
                 result.append(
@@ -205,13 +215,28 @@ class McpManager:
         return result
 
     async def call(self, compound_name: str, arguments: dict[str, Any]) -> str:
+        try:
+            result = await self._call(compound_name, arguments)
+        except Exception as exc:
+            if self.audit:
+                await self.audit(compound_name, str(exc))
+            raise
+        if json.loads(result).get("isError") and self.audit:
+            await self.audit(compound_name, "MCP tool returned isError=true")
+        return result
+
+    async def _call(self, compound_name: str, arguments: dict[str, Any]) -> str:
         _, server_name, tool_name = compound_name.split("__", 2)
         server = self.servers.get(server_name)
+        if server and not server.config.get("enabled", True):
+            raise RuntimeError(f"MCP server {server_name!r} is disabled")
         if not server or server.error:
             raise RuntimeError(f"MCP server {server_name!r} is unavailable")
         try:
             result = await server.request("tools/call", {"name": tool_name, "arguments": arguments})
         except Exception as first_error:
+            if not server.config.get("enabled", True):
+                raise RuntimeError(f"MCP server {server_name!r} was disabled during the call; result is unknown") from first_error
             try:
                 await server.restart()
             except Exception as restart_error:

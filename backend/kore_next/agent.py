@@ -42,6 +42,28 @@ def _search_result_url(raw: str) -> str | None:
     return candidate
 
 
+MEMORY_PURPOSE = {"type": "string", "enum": ["current", "history", "qualified", "disputes", "all"],
+                  "description": "Default current. Select history for past/superseded facts and model-not-adopted claims with their sources, qualified for plans or reports, disputes to compare unresolved evidence; all preserves every usage label. Not-adopted claims are not current facts. Pending/user-rejected contents are never available."}
+MEMORY_FACT = {"type": "object", "description": "One grounded subject/topic/attribute. Use null for unknown scope or effective times; recording time is not effective time.",
+               "properties": {**{key: {"type": ["string", "null"]} for key in ("subject", "topic", "attribute", "value", "time_scope", "valid_from", "valid_until")},
+                              "kind": {"type": "string", "enum": ["current", "historical", "plan", "hypothesis", "reported", "unknown"]},
+                              "atomic": {"type": "boolean"}}}
+MEMORY_PROVENANCE = {"type": "array", "description": "Verbatim supporting quotes from the current user's message. Omit source_id if unknown; the backend binds quotes to actual messages. Never quote your own inference as user evidence.",
+                     "items": {"type": "object", "properties": {"source_id": {"type": "string"}, "quote": {"type": "string"}}, "required": ["quote"]}}
+MEMORY_FACT["properties"].update({
+    "subject_evidence": MEMORY_PROVENANCE,
+    "attribution": {"type": "object", "description": "Origin of the claim, not the message role relaying it. Acceptance is scoped to this fact's subject/property/value: confirming another person's choice does not mean the user adopted that choice. It is separate from permission to store memory.",
+        "properties": {"origin": {"type": "string", "enum": ["user", "third_party", "assistant", "document", "unknown"]},
+                       "speaker": {"type": ["string", "null"]},
+                       "adoption": {"type": "string", "enum": ["accepted", "rejected", "not_stated", "unknown"]},
+                       **{key: {"type": ["string", "null"], "description": "Exact supporting clause within provenance; null if this aspect is unknown."}
+                          for key in ("claim_quote", "origin_quote", "adoption_quote")},
+                       "provenance": MEMORY_PROVENANCE}},
+    "event": {"type": "object", "description": "Explicit change context only. Quotes are extractive; unknown cause/time stays null.",
+        "properties": {**{k: {"type": ["string", "null"]} for k in ("trigger_quote", "reason_quote", "time_quote")},
+                       "provenance": MEMORY_PROVENANCE}},
+})
+
 TOOLS = [
     {
         "type": "function",
@@ -113,15 +135,22 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "remember",
-            "description": "Store stable user information or reusable knowledge in long-term memory.",
+            "description": "Store a durable memory with fact scope, a considered confidence and verbatim source quotes. "
+                           "Automatic mode adjudicates relationships; review mode requires confirmation. Check returned status before claiming acceptance.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string"},
                     "summary": {"type": "string"},
                     "content": {"type": "string"},
+                    "fact": {**MEMORY_FACT, "required": ["kind"]},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    "model_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    "provenance": {**MEMORY_PROVENANCE, "minItems": 1},
+                    "evidence": {"type": "array", "items": {"type": "string"}, "description": "Optional verbatim quotes, verified against original messages."},
+                    "project_id": {"type": ["string", "null"]},
                 },
-                "required": ["title", "summary", "content"],
+                "required": ["title", "summary", "content", "fact", "confidence", "provenance"],
             },
         },
     },
@@ -209,7 +238,9 @@ TOOLS.extend(
         ),
         _definition(
             "unified_search",
-            "Search conversations, emails, Feishu items, memories, tasks and workspace files.",
+            "Search conversations, emails, Feishu items, memories, tasks and workspace files. "
+            "Memory hits contain eligible current-fact summaries only; use memory_search/read for historical, "
+            "conditional or disputed facts and full content.",
             {
                 "query": {"type": "string"},
                 "scope": {"type": "string", "enum": ["all", "messages", "connectors", "memory", "tasks", "files"]},
@@ -228,21 +259,23 @@ TOOLS.extend(
             {"item_id": {"type": "string"}, "limit": {"type": "integer"}},
             ["item_id"],
         ),
-        _definition("memory_list", "List the long-term memory index.", {"status": {"type": "string"}, "sensitive": {"type": "boolean"}}),
+        _definition("memory_list", "List eligible memory summaries with usage labels. Reading does not approve or resolve a fact.", {"status": {"type": "string"}, "sensitive": {"type": "boolean"}, "limit": {"type": "integer"}, "purpose": MEMORY_PURPOSE}),
         _definition(
             "memory_search",
-            "Search long-term memory with SQLite full-text search.",
-            {"query": {"type": "string"}, "limit": {"type": "integer"}, "status": {"type": "string", "enum": ["active", "pending_review", "stale", "archived"]}, "include_sensitive": {"type": "boolean"}, "source_type": {"type": "string"}, "project_id": {"type": "string"}, "contact": {"type": "string"}, "since": {"type": "string"}, "until": {"type": "string"}},
+            "Search long-term memory summaries. Use purpose to retrieve past facts, plans or disputes; never present those as established current facts.",
+            {"query": {"type": "string"}, "purpose": MEMORY_PURPOSE, "limit": {"type": "integer"}, "status": {"type": "string", "enum": ["active", "pending_review", "stale", "archived"]}, "include_sensitive": {"type": "boolean"}, "source_type": {"type": "string"}, "project_id": {"type": "string"}, "contact": {"type": "string"}, "since": {"type": "string"}, "until": {"type": "string"}},
             ["query"],
         ),
-        _definition("memory_read", "Read one long-term memory record. Sensitive details require explicit include_sensitive opt-in. If used in the answer, cite [M:full-memory-id].", {"memory_id": {"type": "string"}, "include_sensitive": {"type": "boolean"}}, ["memory_id"]),
+        _definition("memory_read", "Read eligible memory content with sources and usage guidance. Pending/user-rejected content is withheld; history (including model-not-adopted claims), plans and disputes require the matching purpose. Reading a claim does not adopt it. Sensitive details require explicit opt-in. Cite [M:full-memory-id] only if used.", {"memory_id": {"type": "string"}, "include_sensitive": {"type": "boolean"}, "purpose": MEMORY_PURPOSE}, ["memory_id"]),
         _definition(
             "memory_create",
-            "Create a durable long-term memory.",
+            "Propose a durable memory with grounded evidence and fact scope. Automatic mode adjudicates relationships; review mode requires user confirmation. Inspect returned status/decision_state before claiming acceptance or replacement.",
             {
                 "title": {"type": "string"},
                 "summary": {"type": "string"},
                 "content": {"type": "string"},
+                "fact": MEMORY_FACT,
+                "provenance": MEMORY_PROVENANCE,
                 "source_type": {"type": "string"},
                 "source_id": {"type": "string"},
                 "source_label": {"type": "string"},
@@ -265,9 +298,11 @@ TOOLS.extend(
         ),
         _definition(
             "memory_update",
-            "Update a long-term memory. A substantive change may return a pending review record with a new ID; check its status before claiming the old fact was replaced.",
+            "Propose an update with verbatim evidence. Relationship adjudication may return another ID, unresolved or pending status. Check the result before claiming replacement; newer recording time alone never overrides facts.",
             {
                 "memory_id": {"type": "string"},
+                "fact": MEMORY_FACT,
+                "provenance": MEMORY_PROVENANCE,
                 "title": {"type": "string"},
                 "summary": {"type": "string"},
                 "content": {"type": "string"},
@@ -303,6 +338,13 @@ TOOLS.extend(
             ["title"],
         ),
         _definition("goal_list", "List personal goals.", {"status": {"type": "string"}, "limit": {"type": "integer"}}),
+        _definition("action_create", "Create a local workbench action (今日行动/后续行动), not a tracked task plan. Preserve the source ID and timezone-aware deadline.", {
+            "title": {"type": "string"}, "description": {"type": "string"}, "due_at": {"type": "string"},
+            "goal_id": {"type": "string"}, "source_type": {"type": "string", "enum": ["connector_item", "research_monitor_update", "conversation"]},
+            "source_id": {"type": "string"}, "priority": {"type": "string"}}, ["title"]),
+        _definition("action_list", "List local workbench actions.", {"status": {"type": "string"}, "limit": {"type": "integer"}}),
+        _definition("action_complete", "Complete a local workbench action explicitly requested by the user.", {"action_id": {"type": "string"}}, ["action_id"]),
+        _definition("research_monitor_updates", "Read recent monitored website changes and their source IDs.", {"limit": {"type": "integer"}, "status": {"type": "string"}}),
         _definition(
             "goal_update",
             "Update a personal goal when the user explicitly changes its title, description, priority, or status.",
@@ -379,7 +421,7 @@ TOOLS.extend(
         _definition(
             "feishu_task_create",
             "Create a task in the connected Feishu account after user approval.",
-            {"title": {"type": "string"}, "description": {"type": "string"}, "due_at": {"type": "string"}},
+            {"title": {"type": "string"}, "description": {"type": "string"}, "due_at": {"type": "string"}, "labels": {"type": "array", "items": {"type": "string"}, "description": "Not supported by the current adapter; ask the user to omit labels instead of silently dropping them."}},
             ["title"],
         ),
         _definition(
@@ -426,6 +468,8 @@ TOOLS.extend(
                 "title": {"type": "string"},
                 "starts_at": {"type": "string"},
                 "ends_at": {"type": "string"},
+                "timezone": {"type": "string", "description": "IANA timezone, e.g. Asia/Shanghai"},
+                "participants": {"type": "array", "items": {"type": "object", "properties": {"email": {"type": "string"}, "user_id": {"type": "string"}}}},
                 "description": {"type": "string"},
                 "location": {"type": "string"},
             },
@@ -439,6 +483,7 @@ TOOLS.extend(
                 "title": {"type": "string"},
                 "starts_at": {"type": "string"},
                 "ends_at": {"type": "string"},
+                "timezone": {"type": "string", "description": "IANA timezone, e.g. Asia/Shanghai"},
                 "description": {"type": "string"},
                 "location": {"type": "string"},
             },  # noqa: E501
@@ -511,6 +556,7 @@ PLAN_ALLOWED_TOOLS = {
     "file_extract",
     "connector_related",
     "memory_list",
+    "memory_search",
     "memory_read",
     "task_create",
     "task_update",
@@ -525,6 +571,11 @@ CORE_TOOLS = {
     "read_file",
     "list_files",
     "write_file",
+    "artifact_publish",
+    "action_create",
+    "action_list",
+    "action_complete",
+    "research_monitor_updates",
     "shell",
     "web_search",
     "web_research",
@@ -629,6 +680,7 @@ class ModelClient:
     def __init__(self, settings: Settings, model_config: dict[str, Any] | None = None):
         self.settings = settings
         self.config = model_config or {}
+        self.http_timeout: float | httpx.Timeout = 120
 
     async def complete(
         self,
@@ -761,7 +813,7 @@ class ModelClient:
                 on_text_delta=on_text_delta,
                 on_reasoning_delta=on_reasoning_delta,
             )
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=self.http_timeout) as client:
             response = await client.post(
                 f"{base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -816,7 +868,7 @@ class ModelClient:
         reasoning_parts: list[str] = []
         tool_parts: dict[int, dict[str, str]] = {}
         usage: dict[str, Any] = {}
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=self.http_timeout) as client:
             async with client.stream(
                 "POST",
                 f"{base_url}/chat/completions",
@@ -912,7 +964,7 @@ class ModelClient:
                 on_text_delta=on_text_delta,
                 on_reasoning_delta=on_reasoning_delta,
             )
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=self.http_timeout) as client:
             response = await client.post(
                 f"{base_url}/responses",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -968,7 +1020,7 @@ class ModelClient:
         reasoning_parts: list[str] = []
         calls: dict[str, dict[str, Any]] = {}
         final: dict[str, Any] | None = None
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=self.http_timeout) as client:
             async with client.stream(
                 "POST",
                 f"{base_url}/responses",
@@ -1117,7 +1169,7 @@ class ModelClient:
                 on_text_delta=on_text_delta,
                 on_reasoning_delta=on_reasoning_delta,
             )
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=self.http_timeout) as client:
             response = await client.post(
                 f"{base_url}/messages",
                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
@@ -1165,7 +1217,7 @@ class ModelClient:
         reasoning_parts: list[str] = []
         tools: dict[int, dict[str, Any]] = {}
         usage = {"input_tokens": 0, "output_tokens": 0}
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=self.http_timeout) as client:
             async with client.stream(
                 "POST",
                 f"{base_url}/messages",
@@ -1319,6 +1371,10 @@ class ToolExecutor:
             raise PermissionError(f"Tool {name} is not available in plan mode")
         if name == "tool_catalog":
             return json.dumps(self.activate_tools(str(arguments.get("query") or ""), mode), ensure_ascii=False)
+        if name.startswith("mcp__"):
+            server = self.mcp.servers.get(name.split("__", 2)[1])
+            if server and not server.config.get("enabled", True):
+                raise PermissionError("MCP server is disabled")
         visible = {definition["function"]["name"] for group in self.tool_definitions(mode) for definition in group}
         if name not in visible:
             raise PermissionError(f"Tool {name} is not active; call tool_catalog first")
@@ -1330,9 +1386,14 @@ class ToolExecutor:
                 allowed = await self.approve(run_id, call_id, {**arguments, "tool_name": name}, f"调用 MCP 工具 {name}")
                 if not allowed:
                     return "Denied by user"
-            result = await self.mcp.call(name, arguments)
-            if json.loads(result).get("isError"):
-                raise McpToolError(result)
+            try:
+                result = await self.mcp.call(name, arguments)
+                if json.loads(result).get("isError"):
+                    raise McpToolError(result)
+            except Exception as exc:
+                if self.services is not None and not self.mcp.audit:
+                    await self.services.proactive.audit("mcp.call.failed", entity_type="mcp", entity_id=name, details={"error": str(exc)})
+                raise
             return result
         if name == "read_file":
             path = self.sandbox.resolve(str(arguments.get("path", "")), must_exist=True)
@@ -1437,12 +1498,18 @@ class ToolExecutor:
                 )
             return json.dumps({"artifact": artifact}, ensure_ascii=False)
         if name == "remember":
+            memory_arguments = {key: arguments.get(key) for key in
+                                ("fact", "confidence", "model_confidence", "provenance", "evidence", "project_id")}
+            if self.services is not None:
+                memory = await self.services.remember(title=str(arguments.get("title", "Memory")), summary=str(arguments.get("summary", "")), content=str(arguments.get("content", "")), run_id=run_id, memory_operation_id=f"tool:{run_id}:{call_id}:{name}", **memory_arguments)
+                return json.dumps({"memory": memory}, ensure_ascii=False)
             memory = await self.remember(
                 title=str(arguments.get("title", "Memory")),
                 summary=str(arguments.get("summary", "")),
                 content=str(arguments.get("content", "")),
+                **memory_arguments,
             )
-            return f"Stored memory {memory['id']}"
+            return json.dumps({"memory": memory}, ensure_ascii=False)
         if self.services is not None and name in {
             "feishu_task_create",
             "feishu_task_update",
@@ -1464,6 +1531,7 @@ class ToolExecutor:
             "connector_related",
             "research_monitor_create",
             "memory_list",
+            "memory_search",
             "memory_read",
             "memory_create",
             "memory_update",
@@ -1474,6 +1542,10 @@ class ToolExecutor:
             "goal_list",
             "goal_update",
             "goal_archive",
+            "action_create",
+            "action_list",
+            "action_complete",
+            "research_monitor_updates",
             "task_create",
             "task_update",
             "task_get",
@@ -1546,7 +1618,10 @@ class ToolExecutor:
                     result = await self.services.tool_call(name, arguments, run_id=run_id, mode=mode)
                     return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
                 await self._require_approval(run_id, call_id, name, arguments, f"执行持久化操作 {name}")
-            result = await self.services.tool_call(name, arguments, run_id=run_id, mode=mode)
+            if name in {"memory_create", "memory_update"}:
+                result = await self.services.tool_call(name, arguments, run_id=run_id, mode=mode, memory_operation_id=f"tool:{run_id}:{call_id}:{name}")
+            else:
+                result = await self.services.tool_call(name, arguments, run_id=run_id, mode=mode)
             return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
         return f"Unknown tool: {name}"
 

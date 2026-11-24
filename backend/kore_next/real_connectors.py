@@ -20,6 +20,7 @@ from email.header import decode_header
 from email.message import EmailMessage, Message
 from typing import Any
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -249,20 +250,76 @@ class FeishuClient:
         ends_at: str,
         description: str = "",
         location: str = "",
+        timezone: str | None = None,
+        participants: list[Any] | None = None,
         operation_id: str | None = None,
     ) -> dict[str, Any]:
         calendar_id = await self.primary_calendar(access_token)
         payload: dict[str, Any] = {
             "summary": title,
             "description": description,
-            "start_time": {"timestamp": str(int(datetime.fromisoformat(starts_at.replace("Z", "+00:00")).timestamp()))},
-            "end_time": {"timestamp": str(int(datetime.fromisoformat(ends_at.replace("Z", "+00:00")).timestamp()))},
+            "start_time": self._calendar_time(starts_at, timezone),
+            "end_time": self._calendar_time(ends_at, timezone),
         }
         if location:
             payload["location"] = {"name": location}
-        return await self.request(
+        if timezone:
+            ZoneInfo(timezone)
+            payload["start_time"]["timezone"] = timezone
+            payload["end_time"]["timezone"] = timezone
+        attendees = self._calendar_attendees(participants or [])
+        result = await self.request(
             "POST", f"/calendar/v4/calendars/{calendar_id}/events", access_token=access_token, json=payload, operation_id=operation_id
         )  # noqa: E501
+        if attendees:
+            event = (result.get("data") or {}).get("event") or result.get("event") or {}
+            event_id = str(event.get("event_id") or event.get("id") or "")
+            try:
+                if not event_id:
+                    raise ConnectorRemoteError("创建结果没有返回事件 ID，未发送邀请")
+                await self.request("POST", f"/calendar/v4/calendars/{calendar_id}/events/{event_id}/attendees", access_token=access_token,
+                                   json={"attendees": attendees, "need_notification": True}, operation_id=f"{operation_id}:attendees" if operation_id else None)
+            except Exception as exc:
+                raise ConnectorPartialSuccess("日历已创建，但参与人邀请未确认；请核实邀请结果，不要重复创建事件。", {
+                    "status": "partial_success", "event": event, "calendar_id": calendar_id, "invitation_status": "uncertain" if isinstance(exc, (httpx.TimeoutException, OSError)) else "failed",
+                    "participants": participants, "error": str(exc),
+                }) from exc
+        return result
+
+    @staticmethod
+    def _calendar_time(value: str, timezone: str | None) -> dict[str, str]:
+        zone = ZoneInfo(timezone) if timezone else None
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            if zone is None:
+                raise ValueError("日历时间需要 UTC 偏移或明确的时区")
+            stamp = stamp.replace(tzinfo=zone)
+        result = {"timestamp": str(int(stamp.timestamp()))}
+        if timezone:
+            result["timezone"] = timezone
+        return result
+
+    @staticmethod
+    def _calendar_attendees(participants: list[Any]) -> list[dict[str, str]]:
+        attendees = []
+        for person in participants:
+            if isinstance(person, str):
+                person = {"email": person} if "@" in person else {"user_id": person}
+            if not isinstance(person, dict):
+                raise ValueError("参与人必须是邮箱或飞书用户 ID")
+            email_address = str(person.get("email") or person.get("third_party_email") or "")
+            user_id = str(person.get("user_id") or person.get("open_id") or "")
+            if email_address:
+                if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email_address):
+                    raise ValueError("参与人邮箱无效")
+                attendees.append({"type": "third_party", "third_party_email": email_address})
+            elif user_id:
+                if not re.fullmatch(r"[A-Za-z0-9_-]+", user_id):
+                    raise ValueError("参与人需要实际飞书用户 ID，不能使用姓名或角色名称")
+                attendees.append({"type": "user", "user_id": user_id})
+            else:
+                raise ValueError("参与人缺少邮箱或飞书用户 ID；请先澄清")
+        return attendees
 
     async def update_calendar_event(
         self,
@@ -274,6 +331,7 @@ class FeishuClient:
         ends_at: str | None = None,
         description: str | None = None,
         location: str | None = None,
+        timezone: str | None = None,
         operation_id: str | None = None,
     ) -> dict[str, Any]:
         calendar_id = await self.primary_calendar(access_token)
@@ -283,11 +341,13 @@ class FeishuClient:
         if description is not None:
             payload["description"] = description
         if starts_at is not None:
-            payload["start_time"] = {"timestamp": str(int(datetime.fromisoformat(starts_at.replace("Z", "+00:00")).timestamp()))}
+            payload["start_time"] = self._calendar_time(starts_at, timezone)
         if ends_at is not None:
-            payload["end_time"] = {"timestamp": str(int(datetime.fromisoformat(ends_at.replace("Z", "+00:00")).timestamp()))}
+            payload["end_time"] = self._calendar_time(ends_at, timezone)
         if location is not None:
             payload["location"] = {"name": location} if location else {}
+        if timezone and starts_at is None and ends_at is None:
+            raise ValueError("调整时区时请同时提供开始或结束时间")
         if not payload:
             raise ValueError("at least one event field must be supplied")
         return await self.request(
@@ -511,7 +571,7 @@ class FeishuClient:
             result.append(
                 {
                     "kind": "todo",
-                    "source_id": str(task.get("task_id") or task.get("id") or ""),
+                    "source_id": str(task.get("task_id") or task.get("guid") or task.get("id") or ""),
                     "task_guid": str(task.get("guid") or ""),
                     "title": str(task.get("summary") or task.get("title") or "飞书任务"),
                     "summary": str(task.get("description") or ""),
@@ -519,7 +579,7 @@ class FeishuClient:
                     "due_at": self._timestamp(task.get("due") or task.get("due_time") or task.get("due_timestamp")),
                     "priority": str(task.get("priority") or "normal"),
                     "is_read": True,
-                    "is_done": status in {"done", "completed", "closed"} or task.get("completed") is True,
+                    "is_done": status in {"done", "completed", "closed"} or task.get("completed") is True or str(task.get("completed_at") or "0") not in {"0", ""} or task.get("agent_task_status") == 4,
                     "updated_at": self._timestamp(task.get("updated_at") or task.get("update_time")) or now(),
                     "created_at": self._timestamp(task.get("created_at") or task.get("create_time")) or now(),
                 }
@@ -592,6 +652,8 @@ class FeishuClient:
 
     @staticmethod
     def _timestamp(value: Any) -> str | None:
+        if isinstance(value, dict):
+            value = value.get("timestamp") or value.get("date")
         if value is None or value == "":
             return None
         try:

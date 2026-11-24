@@ -48,6 +48,7 @@ def _aggregate_usages(raw_usages: list[dict[str, Any]]) -> dict[str, int | None]
 def summarize_run_usage(events: list[dict[str, Any]], budget: RunBudget) -> dict[str, Any]:
     auxiliary_calls: dict[str, list[dict[str, Any]]] = {role: [] for role in AUXILIARY_ROLES}
     main_by_step: dict[int, dict[str, Any]] = {}
+    memory_query_usage: list[dict[str, Any]] = []
     inherited_usage: dict[str, Any] = {}
     inherited_model_calls = 0
     effective_budget = budget
@@ -80,6 +81,8 @@ def summarize_run_usage(events: list[dict[str, Any]], budget: RunBudget) -> dict
             inherited_model_calls = int(event.get("inherited_model_calls") or 0)
         elif event.get("type") == "assistant_message" and isinstance(event.get("usage"), dict):
             main_by_step[int(event.get("step") or 0)] = event["usage"]
+        elif event.get("type") == "memory_query_rewrite" and isinstance(event.get("usage"), dict):
+            memory_query_usage.append(event["usage"])
         elif event.get("type") == "run_budget_exceeded" and isinstance(event.get("usage"), dict):
             main_by_step.setdefault(int(event.get("step") or 0), event["usage"])
         elif event.get("type") == "auxiliary_model_completed" and isinstance(event.get("usage"), dict):
@@ -87,9 +90,9 @@ def summarize_run_usage(events: list[dict[str, Any]], budget: RunBudget) -> dict
             if role in auxiliary_calls:
                 auxiliary_calls[role].append(event["usage"])
 
-    main = _aggregate_usages(list(main_by_step.values()))
+    main = _aggregate_usages([*main_by_step.values(), *memory_query_usage])
     auxiliary = {role: _aggregate_usages(calls) for role, calls in auxiliary_calls.items()}
-    provider_total = _aggregate_usages([*main_by_step.values(), *(call for calls in auxiliary_calls.values() for call in calls)])
+    provider_total = _aggregate_usages([*main_by_step.values(), *memory_query_usage, *(call for calls in auxiliary_calls.values() for call in calls)])
 
     budget_usage = {field: int(main[field] or 0) + int(inherited_usage.get(field) or 0) for field in USAGE_FIELDS}
     decision = effective_budget.evaluate(budget_usage, int(main["model_calls"] or 0) + inherited_model_calls)

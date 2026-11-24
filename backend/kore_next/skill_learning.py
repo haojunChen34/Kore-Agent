@@ -8,9 +8,24 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .database import Database
+from .proactive import ProactiveService
+from .security import redact_text
 from .util import dumps, loads, now, uid
 
 DistillationModel = Callable[[str], Awaitable[str]]
+
+
+def sanitize_learning(value: Any) -> Any:
+    """Remove task-specific secrets and absolute paths before storage or distillation."""
+    if isinstance(value, dict):
+        return {key: "[REDACTED]" if re.search(r"(?i)(?:token|password|secret|api_key|authorization)", str(key)) else sanitize_learning(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_learning(item) for item in value]
+    if isinstance(value, str):
+        text = redact_text(value)
+        text = re.sub(r"(?i)\b[A-Z]:[\\/][^\r\n\"'<>|]*", "[REDACTED_PATH]", text)
+        return re.sub(r"(?<![:\w/])/(?:Users|home|tmp|var|mnt|private)/[^\s\"'<>]*", "[REDACTED_PATH]", text)
+    return value
 
 
 class SkillLearningService:
@@ -50,7 +65,7 @@ class SkillLearningService:
                 result = event.get("tool_result") or {}
                 if result.get("success") is not False and result.get("tool_call_id"):
                     successful.add(str(result["tool_call_id"]))
-                    outcomes[str(result["tool_call_id"])] = str(result.get("output") or "")[-1200:]
+                    outcomes[str(result["tool_call_id"])] = sanitize_learning(str(result.get("output") or ""))[-1200:]
         calls = [call for call in calls if str(call.get("id")) in successful]
         # One-off reads are not a reusable workflow.  Require at least two useful steps.
         useful = [call for call in calls if call.get("name") not in {"get_current_time", "memory_list"}]
@@ -100,10 +115,12 @@ class SkillLearningService:
         candidate["evidence"] = self._evidence(useful, outcomes, run["id"])
         candidate["confidence"] = min(0.95, 0.35 + candidate["success_count"] * 0.2 + min(len(useful), 5) * 0.05)
         candidate["action"] = self._overlap_action(candidate, existing_skills or [])
+        candidate = sanitize_learning(candidate)
         if status == "ready" and model is not None:
             distilled = await self._distill(candidate, model)
             if distilled:
                 candidate.update(distilled)
+        candidate = sanitize_learning(candidate)
         await self.db.execute(
             "INSERT INTO skill_candidates(id,status,data_json,created_at,updated_at) VALUES(?,?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET status=excluded.status,data_json=excluded.data_json,updated_at=excluded.updated_at",
@@ -150,7 +167,7 @@ class SkillLearningService:
                     "run_id": run_id,
                     "tool_name": str(call.get("name") or "unknown"),
                     "argument_names": sorted(str(key) for key in arguments)[:12],
-                    "outcome_excerpt": outcomes.get(str(call.get("id")), "")[:500],
+                    "outcome_excerpt": sanitize_learning(outcomes.get(str(call.get("id")), ""))[:500],
                 }
             )
         return result
@@ -244,6 +261,7 @@ class SkillLearningService:
             "UPDATE skill_candidates SET status='dismissed',data_json=?,updated_at=? WHERE id=?",
             (dumps(candidate), candidate["updated_at"], candidate_id),
         )
+        await ProactiveService(self.db).audit("skill.candidate.dismissed", entity_type="skill_candidate", entity_id=candidate_id)
 
     @staticmethod
     def _title(user_message: str, tools: list[str]) -> str:

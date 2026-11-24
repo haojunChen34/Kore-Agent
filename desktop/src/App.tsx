@@ -216,7 +216,7 @@ function NavigationTabs({group,view,onChange}:{group:NavGroup;view:View;onChange
 
 
 type ExternalOperation = { id: string; workflow_id?: string; tool_name?: string; status?: string; error?: string | null; updated_at?: string; started_at?: string; deleted_at?: string | null; preview?: { kind?: string; [key: string]: unknown }; verification?: { status?: string; message?: string; [key: string]: unknown } }
-type WorkflowOperation = ExternalOperation & { arguments?: Record<string, unknown>; result?: unknown }
+type WorkflowOperation = ExternalOperation & { arguments?: Record<string, unknown>; result?: unknown; recovery_ignored?: boolean; superseded?: boolean }
 type WorkflowDetail = { workflow: { id: string; status?: string }; operations: WorkflowOperation[] }
 
 function ExternalOperations(){
@@ -231,7 +231,7 @@ function ExternalOperations(){
   const refreshWorkflow=()=>{void query.refetch();if(selected?.workflow_id)void workflow.refetch()}
   const verify=useMutation({mutationFn:(operationId:string)=>rpc.call<{operation:ExternalOperation}>('external.operation.verify',{operation_id:operationId}),onSuccess:result=>{const status=result.operation.verification?.status;pushToast(status==='confirmed'||status==='confirmed_absent'?'已确认远端结果':'暂未确认远端结果','info');refreshWorkflow()}})
   const compensate=useMutation({mutationFn:(operationId:string)=>rpc.call<{compensation:{status:string;message?:string}}>('external.operation.compensate',{operation_id:operationId}),onSuccess:result=>{const status=result.compensation?.status;pushToast(status==='succeeded'?'补偿操作已完成':result.compensation?.message||'暂不支持该动作的自动补偿','info');refreshWorkflow()}})
-  const continueMutation=useMutation({mutationFn:(payload:{workflow_id:string;operation_id:string;arguments?:Record<string,unknown>})=>rpc.call('external.workflow.continue',payload),onSuccess:()=>{setRetry(null);refreshWorkflow()}})
+  const continueMutation=useMutation({mutationFn:(payload:{workflow_id:string;operation_id:string;arguments?:Record<string,unknown>;confirmed_not_executed?:boolean})=>rpc.call('external.workflow.continue',payload),onSuccess:()=>{setRetry(null);refreshWorkflow()}})
   const remove=useMutation({
     mutationFn:(operationId:string)=>rpc.call('external.operation.delete',{operation_id:operationId}),
     onSuccess:async(_,operationId)=>{
@@ -242,7 +242,9 @@ function ExternalOperations(){
       await Promise.all([queryClient.invalidateQueries({queryKey:['external-operations']}),queryClient.invalidateQueries({queryKey:['external-workflow']})])
     }
   })
-  const operationBusy=remove.isPending||verify.isPending||compensate.isPending||continueMutation.isPending
+  const ignoreRecovery=useMutation({mutationFn:(step:WorkflowOperation)=>rpc.call('external.operation.ignore',{operation_id:step.id,ignored:!step.recovery_ignored}),onSuccess:refreshWorkflow})
+  const requestContinue=(step:WorkflowOperation,confirmedAbsent=false)=>{void confirmAction({title:confirmedAbsent?'确认远端未执行并重试？':'确认重试此操作？',message:confirmedAbsent?'请先到远端确认该操作没有执行。仅搜索不到不能证明未执行；确认错误可能产生重复操作。':`请核对操作参数：${JSON.stringify(step.preview||{})}`,confirmLabel:'确认并执行'}).then(yes=>{if(yes&&selected?.workflow_id)continueMutation.mutate({workflow_id:selected.workflow_id,operation_id:step.id,confirmed_not_executed:confirmedAbsent})})}
+  const operationBusy=remove.isPending||verify.isPending||compensate.isPending||continueMutation.isPending||ignoreRecovery.isPending
   const requestDelete=(item:ExternalOperation)=>{void confirmAction({title:'删除这条外部操作记录？',message:'记录将从列表移除，不会撤销已发邮件或修改飞书对象。为保证任务恢复安全，工作流详情和防止重复执行的凭据会保留。',confirmLabel:'删除记录',destructive:true}).then(yes=>{if(yes)remove.mutate(item.id)})}
   const refresh=()=>{void query.refetch();if(selected?.workflow_id)void workflow.refetch()}
   const openRetry=(step:WorkflowOperation)=>{setRetry(step);setRetryDraft({...step.arguments})}
@@ -252,6 +254,10 @@ function ExternalOperations(){
     <div className="stack">
       {query.isPending&&<Busy label="正在读取外部操作..."/>}{query.error&&<ErrorBox error={query.error} retry={refresh} title="外部操作加载失败"/>}
       {remove.error&&<ErrorBox error={remove.error} title="删除外部操作记录失败"/>}
+      {verify.error&&<ErrorBox error={verify.error} title="远端核实失败"/>}
+      {compensate.error&&<ErrorBox error={compensate.error} title="补偿操作失败"/>}
+      {continueMutation.error&&<ErrorBox error={continueMutation.error} title="重试失败"/>}
+      {ignoreRecovery.error&&<ErrorBox error={ignoreRecovery.error} title="更新处理状态失败"/>}
       {!query.isPending&&!query.error&&!query.data?.length&&<Empty icon={RefreshCw} title="暂无外部操作" hint="Agent 执行外部写入后，结果会显示在这里。"/>}
       {query.data?.map(item=><article className="card" key={item.id}>
         <div className="row-actions"><Status value={item.status||'unknown'}/><strong>{item.tool_name||'External action'}</strong><small>{item.updated_at||''}</small><button onClick={()=>setSelected(item)}>查看详情</button>{item.status==='uncertain'&&<button onClick={()=>verify.mutate(item.id)} disabled={operationBusy}>查询远端结果</button>}<button className="danger" disabled={operationBusy||!['succeeded','failed','denied','uncertain','partial_success'].includes(item.status||'')} title={['succeeded','failed','denied','uncertain','partial_success'].includes(item.status||'')?'删除这条列表记录':'请先处理审批或等待操作结束'} onClick={()=>requestDelete(item)}><Trash2 size={15}/>{remove.isPending&&remove.variables===item.id?'删除中…':'删除'}</button></div>
@@ -262,15 +268,16 @@ function ExternalOperations(){
         {item.status==='uncertain'&&<p className="form-warning">结果未知：请先查询远端状态，再重试。</p>}
         {item.verification?.message&&<small className="verification-note">核实：{item.verification.message}</small>}
       </article>)}
-      {selected&&<section className="card external-detail"><div className="section-heading"><h2>工作流详情</h2><button onClick={()=>{setSelected(null);setRetry(null)}}>关闭</button></div>{workflow.isPending&&<Busy label="正在读取工作流..."/>}{workflow.error&&<ErrorBox error={workflow.error} retry={()=>void workflow.refetch()} title="工作流加载失败"/>}{workflow.data&&<><div className="row-actions"><Status value={workflow.data.workflow.status||'unknown'}/><span>{workflow.data.workflow.id}</span></div><ol className="timeline-list">{workflow.data.operations.map(step=><li key={step.id} className="timeline-row"><Status value={step.status||'unknown'}/><span><strong>{step.tool_name||''}</strong>{step.error&&<small>{step.error}</small>}{step.preview&&<details className="action-preview"><summary>预览</summary><div className="preview-box"><pre>{JSON.stringify(step.preview,null,2)}</pre></div></details>}{step.verification?.message&&<small className="verification-note">核实：{step.verification.message}</small>}</span><time>{step.updated_at||step.started_at||''}</time><div className="row-actions">{step.status==='failed'&&<><button disabled={continueMutation.isPending} onClick={()=>continueMutation.mutate({workflow_id:workflow.data!.workflow.id,operation_id:step.id})}>{continueMutation.isPending?'继续中...':'继续此'}</button><button disabled={continueMutation.isPending} onClick={()=>openRetry(step)}>修改后重试</button></>}{step.status==='uncertain'&&<button disabled={verify.isPending} onClick={()=>verify.mutate(step.id)}>查询远端结果</button>}{['feishu_task_create','feishu_calendar_event_create','feishu_document_create'].includes(step.tool_name||'')&&['succeeded','partial_success'].includes(step.status||'')&&<button className="danger" disabled={compensate.isPending} onClick={()=>requestCompensation(step)}>Compensate</button>}</div></li>)}</ol>{retry&&<RetryEditor step={retry} draft={retryDraft} setDraft={setRetryDraft} submit={submitRetry} cancel={()=>setRetry(null)} pending={continueMutation.isPending}/>} {(workflow.data.workflow.status==='partial_success'||workflow.data.workflow.status==='uncertain')&&<p className="form-warning">请先核实结果未知的。如果远端确认未执行，可修改参数后重试。已创建的飞书对象在已知 ID 时可执行补偿。</p>}</>}</section>}
+      {selected&&<section className="card external-detail"><div className="section-heading"><h2>工作流详情</h2><button onClick={()=>{setSelected(null);setRetry(null)}}>关闭</button></div>{workflow.isPending&&<Busy label="正在读取工作流..."/>}{workflow.error&&<ErrorBox error={workflow.error} retry={()=>void workflow.refetch()} title="工作流加载失败"/>}{workflow.data&&<><div className="row-actions"><Status value={workflow.data.workflow.status||'unknown'}/><span>{workflow.data.workflow.id}</span></div><ol className="timeline-list">{workflow.data.operations.map(step=><li key={step.id} className="timeline-row"><Status value={step.status||'unknown'}/><span><strong>{step.tool_name||''}</strong>{step.error&&<small>{step.error}</small>}{step.preview&&<details className="action-preview"><summary>预览</summary><div className="preview-box"><pre>{JSON.stringify(step.preview,null,2)}</pre></div></details>}{step.verification?.message&&<small className="verification-note">核实：{step.verification.message}</small>}</span><time>{step.updated_at||step.started_at||''}</time><div className="row-actions">{!step.superseded&&step.tool_name!=='connector_workflow'&&['failed','awaiting_approval','approved'].includes(step.status||'')&&<><button disabled={continueMutation.isPending} onClick={()=>requestContinue(step)}>{continueMutation.isPending?'继续中...':step.arguments?.compensation_for?'重试补偿':'重试此操作'}</button><button disabled={continueMutation.isPending} onClick={()=>openRetry(step)}>修改后重试</button></>}{!step.superseded&&step.tool_name!=='connector_workflow'&&step.status==='uncertain'&&<><button disabled={verify.isPending} onClick={()=>verify.mutate(step.id)}>查询远端结果</button><button disabled={continueMutation.isPending} onClick={()=>requestContinue(step,true)}>确认未执行并重试</button></>}{!step.superseded&&['failed','uncertain','partial_success'].includes(step.status||'')&&<button disabled={ignoreRecovery.isPending} onClick={()=>ignoreRecovery.mutate(step)}>{step.recovery_ignored?'恢复处理':'暂不处理'}</button>}{step.superseded&&<small>已有新的重试记录，此处保留历史结果。</small>}{step.recovery_ignored&&<small>已标记暂不处理，原始失败或未知状态仍保留。</small>}{['feishu_task_create','feishu_calendar_event_create','feishu_document_create'].includes(step.tool_name||'')&&['succeeded','partial_success'].includes(step.status||'')&&<button className="danger" disabled={compensate.isPending} onClick={()=>requestCompensation(step)}>撤销已创建对象</button>}</div></li>)}</ol>{retry&&<RetryEditor step={retry} draft={retryDraft} setDraft={setRetryDraft} submit={submitRetry} cancel={()=>setRetry(null)} pending={continueMutation.isPending}/>} {(workflow.data.workflow.status==='partial_success'||workflow.data.workflow.status==='uncertain')&&<p className="form-warning">请先核实结果未知的。如果远端确认未执行，可修改参数后重试。已创建的飞书对象在已知 ID 时可执行补偿。</p>}</>}</section>}
     </div>
   </Page>
 }
 
 const retryFieldLabels:Record<string,string>={to:'To',cc:'Cc',bcc:'Bcc',subject:'Subject',body:'Body',title:'Title',description:'Description',starts_at:'Start time',ends_at:'End time',location:'Location',due_at:'Due time',status:'Task status',task_id:'Task ID',event_id:'Event ID',document_id:'Document ID',content:'Content',block_id:'Block ID'}
 function RetryEditor({step,draft,setDraft,submit,cancel,pending}:{step:WorkflowOperation;draft:Record<string,unknown>;setDraft:React.Dispatch<React.SetStateAction<Record<string,unknown>>>;submit():void;cancel():void;pending:boolean}){
-  const fields=Object.keys(draft).filter(key=>!['idempotency_key','external_operation_id','compensation_for'].includes(key))
-  return <section className="external-retry"><div className="section-heading"><div><h3>修改后重试</h3><small>{step.tool_name||'外部'} - 修改参数后会生成新的幂等键</small></div><button onClick={cancel}>取消</button></div><div className="form-grid">{fields.map(field=>{const multiline=['body','content','description'].includes(field);return <label key={field}>{retryFieldLabels[field]||field}{multiline?<textarea value={String(draft[field]??'')} onChange={event=>setDraft(current=>({...current,[field]:event.target.value}))}/>:<input value={String(draft[field]??'')} onChange={event=>setDraft(current=>({...current,[field]:event.target.value}))}/>}</label>})}</div><div className="row-actions"><button className="primary" onClick={submit} disabled={pending}>{pending?'提交中...':'确认并重试'}</button></div></section>
+  const fields=Object.keys(draft).filter(key=>!['idempotency_key','external_operation_id','compensation_for','_retry_of'].includes(key))
+  const compensationTargetField=step.arguments?.compensation_for?({feishu_task_delete:'task_id',feishu_calendar_event_delete:'event_id',feishu_document_delete:'document_id'} as Record<string,string>)[step.tool_name||'']:undefined
+  return <section className="external-retry"><div className="section-heading"><div><h3>修改后重试</h3><small>{step.tool_name||'外部'} - {compensationTargetField?'补偿目标固定为原创建对象，不能修改。':'修改参数后会生成新的幂等键'}</small></div><button onClick={cancel}>取消</button></div><div className="form-grid">{fields.map(field=>{const multiline=['body','content','description'].includes(field);return <label key={field}>{retryFieldLabels[field]||field}{typeof draft[field]==='object'&&draft[field]!==null?<textarea readOnly value={JSON.stringify(draft[field],null,2)} aria-label={`${retryFieldLabels[field]||field}（保留原值）`}/>:multiline?<textarea value={String(draft[field]??'')} onChange={event=>setDraft(current=>({...current,[field]:event.target.value}))}/>:<input readOnly={field===compensationTargetField} value={String(draft[field]??'')} onChange={event=>setDraft(current=>({...current,[field]:event.target.value}))}/>}</label>})}</div><div className="row-actions"><button className="primary" onClick={submit} disabled={pending}>{pending?'提交中...':'确认并重试'}</button></div></section>
 }
 
 const starterPrompts=['整理这个项目并给出可执行计划','检查当前实现的风险与缺口','完成一个任务并把结果发布为交付物']
@@ -290,6 +297,8 @@ function Chat({initialConversationId,onSelectConversation,requestedMode,onOpenRu
   const [pinned,setPinned]=useState<string[]>(()=>JSON.parse(localStorage.getItem('koreagent:pinned-conversations')||'[]'))
 
   useEffect(()=>{if(requestedMode)setMode(requestedMode)},[requestedMode])
+
+  useEffect(()=>{setRenaming(false)},[selected])
 
   const conversations=useQuery({queryKey:['conversations'],queryFn:()=>rpc.call<{conversations:Conversation[]}>('conversation.list',{limit:100}).then(x=>x.conversations)})
 
@@ -323,7 +332,7 @@ function Chat({initialConversationId,onSelectConversation,requestedMode,onOpenRu
 
   const remove=useMutation({mutationFn:(id:string)=>rpc.call('conversation.delete',{conversation_id:id}),onSuccess:(_result,id)=>{conversationActivity.forget(id);qc.setQueryData<Conversation[]>(['conversations'],items=>items?.filter(item=>item.id!==id));setSelected('');qc.invalidateQueries({queryKey:['conversations']})}})
 
-  const rename=useMutation({mutationFn:(title:string)=>rpc.call('conversation.rename',{conversation_id:selected,title}),onSuccess:()=>{setRenaming(false);qc.invalidateQueries({queryKey:['conversation',selected]});qc.invalidateQueries({queryKey:['conversations']})}})
+  const rename=useMutation({mutationFn:({id,title}:{id:string;title:string})=>rpc.call('conversation.rename',{conversation_id:id,title}),onSuccess:(_result,{id})=>{setRenaming(false);qc.invalidateQueries({queryKey:['conversation',id]});qc.invalidateQueries({queryKey:['conversations']})}})
 
   const approvals=useQuery({queryKey:['approvals','chat'],queryFn:()=>rpc.call<{approvals:Approval[]}>('approval.list',{status:'pending',limit:50}).then(x=>x.approvals),refetchInterval:15000})
 
@@ -445,7 +454,8 @@ function Chat({initialConversationId,onSelectConversation,requestedMode,onOpenRu
     {drawer&&<button className="drawer-scrim" aria-label="关闭会话列表" onClick={()=>setDrawer(false)}/>}
     <aside className={`conversation-list ${drawer?'open':''}`} aria-label="会话列表"><div className="conversation-title"><strong>会话</strong><button aria-label="新建会话" onClick={()=>create.mutate()}><Plus size={16}/></button></div><div className="conversation-scroll">{ordered.map(item=><div className={`conversation-row ${selected===item.id?'selected':''}`} key={item.id}><button onClick={()=>{setSelected(item.id);setDrawer(false)}}><span>{displayConversationTitle(item.title)}</span><small>{item.message_count} 条消息</small></button><button aria-label="置顶会话" onClick={()=>pin(item.id)}>{pinned.includes(item.id)?<PinOff size={13}/>:<Pin size={13}/>}</button></div>)}</div></aside>
     <section className="workspace">{!selected?<Empty icon={MessageSquare} title="开始新对话" hint="创建会话，然后告诉 KoreAgent Next 你想完成的结果。" action={<button className="primary" onClick={()=>create.mutate()}><Plus size={15}/>新建会话</button>}/>:<>
-      <header className="workspace-head"><div><h2>{detail.data?.conversation.title||'会话'}</h2><small>{send.isPending?'Agent 正在工作':`${tasks.data?.filter(item=>['active','blocked'].includes(item.status)).length||0} 个持续任务`}</small></div><div className="row-actions"><button className="icon" aria-label="重命名会话" onClick={()=>setRenaming(true)}><Pencil size={15}/></button><button className="icon danger" aria-label="删除会话" onClick={()=>{void confirmAction({title:'删除这个会话？',message:'会话及其消息将被删除。',confirmLabel:'删除会话',destructive:true}).then(yes=>{if(yes)remove.mutate(selected)})}}><Trash2 size={16}/></button></div></header>
+      <header className="workspace-head"><div>{renaming?<RenameForm key={selected} initial={detail.data?.conversation.title||''} pending={rename.isPending} save={title=>rename.mutate({id:selected,title})} cancel={()=>setRenaming(false)}/>:<h2>{detail.data?.conversation.title||'会话'}</h2>}<small>{send.isPending?'Agent 正在工作':`${tasks.data?.filter(item=>['active','blocked'].includes(item.status)).length||0} 个持续任务`}</small></div><div className="row-actions"><button className="icon" aria-label="重命名会话" disabled={!detail.data||rename.isPending} onClick={()=>{rename.reset();setRenaming(true)}}><Pencil size={15}/></button><button className="icon danger" aria-label="删除会话" onClick={()=>{void confirmAction({title:'删除这个会话？',message:'会话及其消息将被删除。',confirmLabel:'删除会话',destructive:true}).then(yes=>{if(yes)remove.mutate(selected)})}}><Trash2 size={16}/></button></div></header>
+      {renaming&&rename.error&&rename.variables?.id===selected&&<ErrorBox error={rename.error} title="重命名失败"/>}
       <TaskPanel task={activeTask} run={currentRun} onOpenRun={onOpenRun} recovering={recover.isPending} onRecover={id=>recover.mutate({runId:id,conversationId:selected})}/>
       <div className="messages" aria-live="polite">{detail.isLoading?<Busy/>:detail.error?<ErrorBox error={detail.error} retry={()=>detail.refetch()} title="会话加载失败"/>:detail.data?.messages.length?<ConversationMessages messages={detail.data.messages.slice(0,live?.historyLength)}/>:<div className="starter-state"><Empty icon={Bot} title="空白会话" hint="选择一个起点，或直接输入你的目标。"/><div className="starter-prompts">{starterPrompts.map(prompt=><button key={prompt} onClick={()=>setInput(prompt)}>{prompt}<ChevronRight size={14}/></button>)}</div></div>}{live&&<LiveRun live={live}/>} {plan.data&&<PlanDecision task={plan.data} pending={decidePlan.isPending} decide={accepted=>decidePlan.mutate({accepted,taskId:plan.data!.id,conversationId:selected})}/>} {artifacts.data?.map(item=><ArtifactInline key={item.id} artifact={item}/>)}</div>
       {pendingApproval&&<InlineApproval approval={pendingApproval} pending={approval.isPending} decide={(yes,scope)=>approval.mutate({id:pendingApproval.id,yes,scope})}/>} {send.error&&!(send.error instanceof Error&&/request cancelled/i.test(send.error.message))&&<ErrorBox error={send.error} retry={()=>send.mutate(send.variables!)}/>}
@@ -461,7 +471,7 @@ function TaskPanel({task,run,onOpenRun,onRecover,recovering}:{task?:Task;run?:Ru
   const current=task?.steps.find(step=>['active','running','blocked'].includes(step.status))||task?.steps.find(step=>step.status==='pending')
   return <section className="chat-task-panel" aria-label="当前任务进度"><div className="chat-task-heading"><div><strong>{task?.title||'当前运行'}</strong><small>{task?`${done}/${total} 步已完成${current?` · 当前：${current.title}`:''}`:`状态：${statusChinese(run?.status||'未知')}`}</small></div><div className="row-actions">{run&&<button onClick={()=>onOpenRun(run.id)}>查看运行 <ChevronRight size={14}/></button>}{run&&['interrupted','failed','cancelled'].includes(run.status)&&<button disabled={recovering} onClick={()=>onRecover(run.id)}><RefreshCw size={14}/>恢复</button>}</div></div>{task&&total>0&&<><progress max={total} value={done} aria-label="任务完成进度"/><ol>{task.steps.map(step=><li key={step.id}><Status value={step.status}/><span>{step.title}</span></li>)}</ol></>}</section>
 }
-function RenameForm({initial,save,cancel}:{initial:string;save(value:string):void;cancel():void}){const [value,setValue]=useState(initial);return <form className="rename-form" onSubmit={e=>{e.preventDefault();if(value.trim())save(value.trim())}}><input autoFocus value={value} onChange={e=>setValue(e.target.value)} aria-label="会话标题"/><button className="primary" type="submit">保存</button><button type="button" onClick={cancel}>取消</button></form>}
+function RenameForm({initial,save,cancel,pending}:{initial:string;save(value:string):void;cancel():void;pending:boolean}){const [value,setValue]=useState(initial);return <form className="rename-form" onSubmit={e=>{e.preventDefault();if(value.trim()&&!pending)save(value.trim())}} onKeyDown={e=>{if(e.key==='Escape'&&!pending){e.preventDefault();cancel()}}}><input autoFocus value={value} onChange={e=>setValue(e.target.value)} aria-label="会话标题" maxLength={120} disabled={pending}/><button className="primary" type="submit" disabled={pending||!value.trim()}>{pending?'保存中…':'保存'}</button><button type="button" disabled={pending} onClick={cancel}>取消</button></form>}
 
 function ConversationMessages({messages}:{messages:Message[]}){
   const rendered:JSX.Element[]=[]
@@ -618,7 +628,7 @@ function Approvals(){
       {remove.error&&<ErrorBox error={remove.error} title="删除审批记录失败"/>}
       {!query.isPending&&!query.error&&!query.data?.length&&<Empty icon={ShieldCheck} title="没有审批请求" hint="需要确认的工具操作会出现在这里。"/>}
       {query.data?.map(item=><article className="approval" key={item.id}>
-        <div><div className="approval-heading"><Status value={item.status}/><code>{item.tool_name}</code></div><h3>{approvalTitle(item)}</h3><p>{item.reason}</p><small>Run {item.run_id?.slice(0,8)||'—'} · {new Date(item.created_at).toLocaleString()}</small><dl className="approval-facts">{approvalFacts(item.arguments).map(([key,value])=><div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}</dl></div>
+        <div><div className="approval-heading"><Status value={item.status}/><code>{item.tool_name}</code></div><h3>{approvalTitle(item)}</h3><p>{item.reason}</p><small>Run {item.run_id?.slice(0,8)||'—'} · {new Date(item.created_at).toLocaleString()}</small><div className="approval-preview"><strong>操作预览</strong>{item.preview?<pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:320,overflow:'auto'}}>{JSON.stringify(item.preview,null,2)}</pre>:<p>当前没有完整预览，请先核实操作内容。</p>}</div><dl className="approval-facts">{approvalFacts(item.arguments).map(([key,value])=><div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}</dl></div>
         <div className="approval-actions">
           {item.status==='pending'&&<><select value={scopes[item.id]||'once'} onChange={e=>setScopes({...scopes,[item.id]:e.target.value as PermissionScope})} aria-label="允许范围">{(item.available_scopes||['once','run','conversation','global']).map(scope=><option value={scope} key={scope}>{permissionScopeLabel(scope)}</option>)}</select><button className="danger" disabled={busy} onClick={()=>action.mutate({id:item.id,yes:false,scope:'once'})}><XCircle size={15}/>拒绝</button><button className="primary" disabled={busy} onClick={()=>action.mutate({id:item.id,yes:true,scope:scopes[item.id]||'once'})}><CheckCircle2 size={15}/>允许</button></>}
           <button className="danger" disabled={busy||!['approved','denied','cancelled'].includes(item.status)} title={item.status==='pending'?'请先允许或拒绝，再删除记录':'删除这条审批记录'} onClick={()=>requestDelete(item)}><Trash2 size={15}/>{remove.isPending&&remove.variables===item.id?'删除中…':'删除'}</button>
@@ -677,21 +687,82 @@ function TasksAndPlans({initialTaskId}:{initialTaskId?:string|null}){
 
 function decayReasonLabel(reason?:string){return ({long_term_unused:'长期未使用',recently_reused:'最近被复用',became_stale:'已进入衰减状态',recovered_from_stale:'复用后恢复活跃',periodic_decay_check:'定期检查'} as Record<string,string>)[reason||'']||reason||'首次计算'}
 function formatDecayDelta(value?:number|null){if(value==null)return '首次计算';const percent=Math.round(value*100);return `${percent>0?'+':''}${percent}%`}
+function memoryUsageLabel(state?:string){return ({current:'当前事实',historical:'历史事实',qualified:'有使用条件',disputed:'存在争议',awaiting_confirmation:'等待确认',rejected:'已拒绝',assessment_pending:'判断未完成',not_adopted:'本次信息未采用'} as Record<string,string>)[state||'']||'历史记录'}
+function memoryRelationLabel(relation?:string){return ({duplicate:'重复支持',supplement:'补充内容',replacement:'明确更新',keep_old:'保留原事实',coexist:'分别保留',unresolved:'无法确定',incomplete:'判断未完成'} as Record<string,string>)[relation||'']||relation||'无关联裁决'}
+function canReassessMemory(item:MemoryItem){return ['active','stale','pending_review'].includes(item.status)&&!item.user_resolution&&!item.conflicts?.length&&item.acceptance_source!=='rejected'&&(item.adjudication?.state==='incomplete'||item.status==='pending_review')}
+function memoryNeedsReplacementScope(item:MemoryItem){
+  if(item.conflicts?.length)return true;
+  const qualified=['plan','hypothesis','reported'].includes(item.fact?.kind||'');
+  if(item.fact_state==='not_adopted'&&item.retained_ids?.length&&!qualified)return true;
+  return item.status==='pending_review'&&Boolean(item.adjudication?.decisions?.some(decision=>decision.relation==='unresolved'||(decision.relation==='keep_old'&&!qualified)));
+}
+type MemoryReplacementPreview={chosen:Pick<MemoryItem,'id'|'title'|'content'|'revision'|'status'|'fact'>;other:Pick<MemoryItem,'id'|'title'|'content'|'revision'|'status'|'fact'>;review_token:string};
+function MemoryReplacementDialog({memoryId,confirm,close,onChanged}:{memoryId:string;confirm:boolean;close():void;onChanged():void}){
+  const preview=useQuery({queryKey:['memory-replacement-preview',memoryId,confirm],queryFn:()=>rpc.call<MemoryReplacementPreview>('memory.conflict.preview',{memory_id:memoryId,confirm}),staleTime:0,refetchOnWindowFocus:false});
+  const [mode,setMode]=useState<'partial'|'whole'>('partial');
+  const [fragments,setFragments]=useState<string[]>(['']);
+  const [checked,setChecked]=useState(false);
+  const decision=useMutation({mutationFn:()=>{
+    if(!preview.data||!checked)throw new Error('请先核对替换范围');
+    return rpc.call(confirm?'memory.confirm':'memory.conflict.resolve',{
+      memory_id:memoryId,...(!confirm?{action:'accept_new'}:{}),
+      replacement_scope:{chosen_id:preview.data.chosen.id,target_id:preview.data.other.id,review_token:preview.data.review_token,confirmed:true,
+        replace_entire_record:mode==='whole',superseded_fragments:mode==='partial'?fragments:[]},
+    });
+  },onSuccess:()=>{onChanged();close()}});
+  const refresh=()=>{setChecked(false);setFragments(['']);decision.reset();void preview.refetch()};
+  const changeMode=(value:'partial'|'whole')=>{setMode(value);setChecked(false);decision.reset()};
+  const changeFragments=(value:string[])=>{setFragments(value);setChecked(false);decision.reset()};
+  return <div className="modal-back" onMouseDown={event=>{if(event.target===event.currentTarget&&!decision.isPending)close()}}>
+    <section className="modal memory-detail" role="dialog" aria-modal="true" aria-labelledby="memory-replacement-title">
+      <h2 id="memory-replacement-title">确认记忆替换范围</h2>
+      {preview.isFetching?<LoadingState label="正在读取两条记忆…"/>:preview.error?<ErrorState error={preview.error} retry={refresh}/>:preview.data&&<div className="memory-detail-content">
+        <section><h3>准备采用：{preview.data.chosen.title} · v{preview.data.chosen.revision}</h3><p className="memory-detail-full-content">{preview.data.chosen.content||'暂无正文'}</p></section>
+        <section className="memory-detail-section"><h3>待替换：{preview.data.other.title} · v{preview.data.other.revision}</h3><p className="memory-detail-full-content">{preview.data.other.content||'暂无正文'}</p></section>
+        <fieldset disabled={decision.isPending} style={{border:0,padding:0,marginTop:16}}>
+          <legend>选择替换范围</legend>
+          <label style={{flexDirection:'row',alignItems:'center'}}><input type="radio" name="memory-replacement-mode" checked={mode==='partial'} onChange={()=>changeMode('partial')}/>只替换指定事实，保留其他内容</label>
+          <label style={{flexDirection:'row',alignItems:'center'}}><input type="radio" name="memory-replacement-mode" checked={mode==='whole'} onChange={()=>changeMode('whole')}/>替换整条旧记忆，旧正文全部转为历史</label>
+          {mode==='partial'?<>
+            <p className="muted">从待替换正文复制完整的独立句或分句，每框一段（最多 8 段）。不要只填写某个名称或数值；未选中的事实将继续保留。</p>
+            {fragments.map((fragment,index)=><div key={index}><label>旧事实片段 {index+1}<textarea value={fragment} onChange={event=>changeFragments(fragments.map((value,i)=>i===index?event.target.value:value))}/></label>{fragments.length>1&&<button type="button" onClick={()=>changeFragments(fragments.filter((_,i)=>i!==index))}>移除此片段</button>}</div>)}
+            {fragments.length<8&&<button type="button" onClick={()=>changeFragments([...fragments,''])}>增加片段</button>}
+          </>:<p className="form-warning">旧记忆中的所有事实都将退出当前事实列表；历史正文和版本仍会保留。</p>}
+          <label style={{flexDirection:'row',alignItems:'flex-start'}}><input type="checkbox" checked={checked} onChange={event=>setChecked(event.target.checked)}/>{mode==='partial'?'我已核对上述片段，剩余内容仍能独立表达原事实及其适用条件。':'我已核对整条旧记忆，确认其中全部内容都应被新记忆替代。'}</label>
+        </fieldset>
+        <small>提交时会再次检查版本和原文；记录已变化或片段不符合要求时，不会执行替换。</small>
+      </div>}
+      {decision.error&&<p className="form-error" role="alert">处理失败：{String(decision.error)}</p>}
+      <div className="modal-actions"><button onClick={close} disabled={decision.isPending}>取消</button><button onClick={refresh} disabled={decision.isPending||preview.isFetching}>重新读取</button><button className="primary" onClick={()=>decision.mutate()} disabled={!preview.data||!!preview.error||preview.isFetching||!checked||decision.isPending||(mode==='partial'&&fragments.some(value=>!value.trim()))}>{decision.isPending?'正在处理…':'确认采用'}</button></div>
+    </section>
+  </div>;
+}
 function MemoryDetail({item,close,confidenceSource,onChanged}:{item:MemoryItem;close():void;confidenceSource:(item:MemoryItem)=>string;onChanged():void}){
   const versions=useQuery({queryKey:['memory-versions',item.id],queryFn:()=>rpc.call<any>('memory.versions',{memory_id:item.id}).then(result=>result.versions||[])});
   const source=useQuery({queryKey:['memory-source',item.id],queryFn:()=>rpc.call<any>('memory.source.get',{memory_id:item.id}).then(result=>result.source),enabled:Boolean(item.source_id)});
   const rollback=useMutation({mutationFn:(revision:number)=>rpc.call('memory.rollback',{memory_id:item.id,revision}),onSuccess:()=>{onChanged();void versions.refetch()}});
+  const reassess=useMutation({mutationFn:()=>rpc.call('memory.reassess',{memory_id:item.id}),onSuccess:onChanged});
+  const verifiedEvidence=(item.evidence||[]).filter(value=>value.length>=3&&item.provenance?.some(entry=>entry.quote.includes(value)));
+  const unverifiedEvidence=[...new Set([...(item.unverified_evidence||[]),...(item.evidence||[]).filter(value=>!verifiedEvidence.includes(value))])];
   return <div className="modal-back" onMouseDown={event=>{if(event.target===event.currentTarget)close()}}><section className="modal memory-detail" role="dialog" aria-modal="true" aria-labelledby="memory-detail-title">
     <header className="memory-detail-header"><div><Status value={item.status}/><h2 id="memory-detail-title">{item.title}</h2><p>{item.summary}</p></div><button type="button" onClick={close}>关闭</button></header>
     <div className="memory-detail-content">
       <section><h3>完整内容</h3><p className="memory-detail-full-content">{item.content||item.summary||'暂无完整内容'}</p></section>
+      {item.adjudication?.state==='incomplete'&&<section className="memory-detail-section"><h3>关系判断未完成</h3><p>新增内容暂不作为回答依据。调用超时、服务异常或证据校验未通过，都不会据此判定旧事实存在矛盾。</p><p>{item.relation_reason}</p></section>}
+      {canReassessMemory(item)&&<section className="memory-detail-section"><button onClick={()=>reassess.mutate()} disabled={reassess.isPending||rollback.isPending}>{reassess.isPending?'正在重新判断…':'重新判断'}</button><small>使用当前模型重新核对关联关系，保留这条记录；待确认模式仍需要确认。</small>{reassess.error&&<p className="form-error">重新判断失败：{String(reassess.error)}</p>}</section>}
+      {!!item.partial_updates?.length&&<section className="memory-detail-section"><h3>局部事实更新</h3><p>本条保留未发生变化的内容，已替代部分另存历史记录。</p>{item.partial_updates.map((part,index)=><p key={index}>新事实：{part.replacement_id}<br/>旧事实片段：{part.history_id}<br/>{part.at}</p>)}</section>}
+      {item.origin_memory_id&&<section className="memory-detail-section"><h3>旧事实片段来源</h3><p>原记忆：{item.origin_memory_id} · 原版本：{item.origin_revision}</p></section>}
+      <section className="memory-detail-section"><h3>使用范围 · {memoryUsageLabel(item.usage_state)}</h3><p>{item.usage_guidance||'历史记录没有结构化事实信息，使用时仍需核对原文和来源。'}</p>{item.fact&&<><p>主体：{item.fact.subject||'未知'} · 主题：{item.fact.topic||'未知'} · 属性：{item.fact.attribute||'未知'}</p><small>事实类型：{({current:'当前事实',historical:'历史事实',plan:'计划',hypothesis:'假设或未核实推断',reported:'转述',unknown:'未确定'} as Record<string,string>)[item.fact.kind||'unknown']} · 时间范围：{item.fact.time_scope||'未明确'}</small><small>生效时间：{item.fact.valid_from||'未明确'} · 失效时间：{item.fact.valid_until||'未明确'}（不以写入时间推定）</small></>}{item.superseded_by&&<small>已被替代：{item.superseded_by}</small>}{!!item.supersedes?.length&&<small>替代的旧记忆：{item.supersedes.join('、')}</small>}{!!item.retained_ids?.length&&<small>本次保留的原记忆：{item.retained_ids.join('、')}</small>}</section>
+      {item.adjudication&&<section className="memory-detail-section"><h3>关系裁决记录</h3><p>{item.adjudication.mode==='automatic'?'自动保存判断':'需确认的关系判断'} · {item.adjudication.at||'时间未知'}</p>{item.adjudication.decisions?.length?item.adjudication.decisions.map((decision,index)=><div key={`${decision.target_id}-${index}`}><p><b>{memoryRelationLabel(decision.relation)}</b> · {decision.reason}</p><small>对应记忆：{decision.target_id}{decision.confidence!=null?` · 模型判断置信度 ${Math.round(decision.confidence*100)}%`:''}</small>{decision.partial_update_safe&&<small>只更新以下旧事实片段：{decision.superseded_fragments?.join('；')}</small>}{decision.incoming_quote&&<p className="memory-detail-full-content">新增来源原文：{decision.incoming_quote}</p>}{decision.existing_quote&&<p className="memory-detail-full-content">原记忆依据：{decision.existing_quote}</p>}</div>):<small>未发现需要比较的相关记忆。</small>}{item.user_resolution&&<p>后续人工处理：{({confirm:'确认',confirm_qualified:'按条件性信息保留',duplicate:'确认重复支持',supplement:'确认补充',reject:'拒绝',keep_old:'保留原记忆',accept_new:'采用指定记忆',partial_replacement:'仅替换指定片段',merge:'合并',rollback:'回滚'} as Record<string,string>)[item.user_resolution.action||'']||item.user_resolution.action} · {item.user_resolution.at}</p>}<small>以上保留当时的判断；当前能否使用以“使用范围”为准。自动判断不等于事实必然正确。</small></section>}
+      {!!item.provenance?.length&&<section className="memory-detail-section"><h3>核对过的原文引用</h3>{item.provenance.map((entry,index)=><div key={`${entry.id}-${index}`}><small>{entry.role==='user'?'用户原话':entry.role==='assistant'?'助手输出':entry.role||'来源'} · {entry.observed_at||'时间未记录'}{entry.message_id!=null?` · 消息 ${entry.message_id}`:''}</small><p className="memory-detail-full-content">{entry.quote}</p></div>)}</section>}
       <section className="memory-detail-section"><h3>置信度</h3><p>最终置信度：{item.confidence!=null?`${Math.round(item.confidence*100)}%`:'未提供'} · 模型估计：{item.model_confidence!=null?`${Math.round(item.model_confidence*100)}%`:'未提供'} · 来源：{confidenceSource(item)}</p></section>
       {item.extraction_reason&&<section className="memory-detail-section"><h3>提取依据</h3><p>{item.extraction_reason}</p></section>}
-      {!!item.evidence?.length&&<section className="memory-detail-section"><h3>证据</h3><ul>{item.evidence.map((evidence,index)=><li key={`${item.id}-evidence-${index}`}>{evidence}</li>)}</ul></section>}
+      {!!verifiedEvidence.length&&<section className="memory-detail-section"><h3>已核对原文的证据</h3><ul>{verifiedEvidence.map((evidence,index)=><li key={`${item.id}-evidence-${index}`}>{evidence}</li>)}</ul><small>已核对表示引用来自记录的原文，不代表内容已被证实为真。</small></section>}
+      {!!unverifiedEvidence.length&&<section className="memory-detail-section"><h3>未核验说明</h3><ul>{unverifiedEvidence.map((note,index)=><li key={`${item.id}-note-${index}`}>{note}</li>)}</ul><small>这些说明保留供用户查看，不作为已核验证据返回给 Agent。</small></section>}
       {(item.source_type||item.source_label||item.source_id||item.source_ids?.length)&&<section className="memory-detail-section"><h3>来源</h3><p>{item.source_label||item.source_type||'conversation'}{item.source_id?` · ${item.source_id}`:''}</p>{item.source_ids?.length ? <small>关联来源：{item.source_ids.join('、')}</small> : null}{source.isPending&&<small>正在读取原始来源…</small>}{source.data?.run ? <><small>来源运行：{source.data.run.id} · {source.data.run.created_at}</small>{source.data.messages?.length ? <details><summary>查看原始会话片段</summary><div className="memory-source-messages">{source.data.messages.map((message:any,index:number)=><p key={`${item.id}-source-${index}`}><b>{message.role}：</b>{message.content}</p>)}</div></details> : null}</> : null}</section>}
-      {!!item.conflicts?.length&&<section className="memory-detail-section memory-detail-conflict"><h3>{item.relation_kind==='supplement'?'补充内容待确认':'事实更新与冲突'}</h3><p>{item.relation_reason||'已有记忆内容不同，需要确认。'}</p><small>关联记忆：{item.conflicts.join('、')}</small><small>事实观察时间：{item.observed_at||'未知'}</small></section>}
+      {(!!item.conflicts?.length||item.decision_state==='unresolved')&&<section className="memory-detail-section memory-detail-conflict"><h3>事实更新与争议</h3><p>{item.relation_reason||'现有依据不足以确定事实关系。'}</p><p>{item.status==='pending_review'?'保存方式要求确认，尚未允许 Agent 使用正文。':'已保留争议，不阻塞后续运行；默认不作为当前事实注入，可选人工处理。'}</p>{!!item.conflicts?.length&&<small>关联记忆：{item.conflicts.join('、')}</small>}<small>来源记录时间：{item.observed_at||'未知'}</small></section>}
       <section className="memory-detail-section"><h3>状态信息</h3><p>保存方式：{item.acceptance_source==='automatic'?'自动保存':item.acceptance_source==='user'?'用户确认':item.acceptance_source==='pending_review'?'等待确认':'历史记录'} · 用户确认：{item.user_confirmed?'已确认':'未确认'} · 支持次数：{item.support_count||1}</p><small>创建时间：{item.created_at||'未知'} · 更新时间：{item.updated_at||'未知'}</small>{item.retrieval_priority!=null&&<small>当前检索优先级：{Math.round(item.retrieval_priority*100)}%{item.decay_score!=null?'（包含时间衰减）':''}</small>}{item.last_update_reason&&<small>最近更新原因：{item.last_update_reason}</small>}{item.archive_reason&&<small>归档原因：{item.archive_reason}</small>}</section>
-      <section className="memory-detail-section"><h3>老化与复用</h3><p>当前有效性：{item.decay_score!=null?`${Math.round(item.decay_score*100)}%`:'尚未计算'} · 最近变化：{formatDecayDelta(item.decay_delta)}</p><small>提供给模型：{item.injection_count||0} 次 · 读取详情：{item.access_count||0} 次 · 回答引用：{item.citation_count||0} 次</small><small>最近读取：{item.last_accessed_at||'未知'} · 最近引用：{item.last_cited_at||'暂无'}</small><small>最近计算：{item.last_decay_calculated_at||'尚未计算'} · 原因：{decayReasonLabel(item.decay_reason)}</small><small>同一运行重复读取只计一次，每天最多强化 5 次；仅提供摘要不会强化。引用记录不代表回答正确。老化不会降低事实置信度。</small></section>
+      <section className="memory-detail-section"><h3>老化与复用</h3><p>当前有效性：{item.decay_score!=null?`${Math.round(item.decay_score*100)}%`:'尚未计算'} · 最近变化：{formatDecayDelta(item.decay_delta)}</p><small>提供给模型：{item.injection_count||0} 次 · 读取详情：{item.access_count||0} 次 · 回答引用：{item.citation_count||0} 次</small><small>最近读取：{item.last_read_at||item.last_accessed_at||'未知'} · 最近引用：{item.last_cited_at||'暂无'}</small><small>最近计算：{item.last_decay_calculated_at||'尚未计算'} · 原因：{decayReasonLabel(item.decay_reason)}</small><small>同一运行重复读取只计一次，每天最多强化 5 次；仅提供摘要不会强化。引用记录不代表回答正确。老化不会降低事实置信度。</small></section>
       <section className="memory-detail-section"><h3>版本记录</h3>{versions.isPending?<small>正在读取版本…</small>:!versions.data?.length?<small>暂无版本记录</small>:<div className="memory-versions">{versions.data.map((version:any)=><div className="memory-version" key={`${item.id}-${version.revision}`}><span>v{version.revision} · {version.reason||'更新'} · {version.version_created_at||version.created_at}</span><button disabled={rollback.isPending||version.revision===item.revision} onClick={()=>rollback.mutate(Number(version.revision))}>回滚到此版本</button></div>)}</div>}</section>
     </div>
     <div className="modal-actions"><button type="button" onClick={close}>关闭</button>{rollback.error&&<span className="form-error">回滚失败：{String(rollback.error)}</span>}</div>
@@ -704,6 +775,7 @@ function Memory({initialMemoryId}:{initialMemoryId?:string|null}){
   type MemoryTab='pending_review'|'active'|'archived';
   const [tab,setTab]=useState<MemoryTab>('pending_review');
   const [detail,setDetail]=useState<MemoryItem|null>(null);
+  const [replacement,setReplacement]=useState<{id:string;confirm:boolean}|null>(null);
   const [searchText,setSearchText]=useState('');
   const [searching,setSearching]=useState('');
   const [sourceFilter,setSourceFilter]=useState('');
@@ -716,7 +788,16 @@ function Memory({initialMemoryId}:{initialMemoryId?:string|null}){
   const archivedMemories:MemoryItem[]=query.data?.archived||[];
   const memories=tab==='pending_review'?pendingReviews:tab==='active'?activeMemories:archivedMemories;
   const memoryDecision=useMutation({mutationFn:({id,accepted}:{id:string;accepted:boolean})=>rpc.call(accepted?'memory.confirm':'memory.reject',{memory_id:id}),onSuccess:()=>query.refetch()});
-  const confirmSelected=useMutation({mutationFn:async()=>{for(const id of selected) await rpc.call('memory.confirm',{memory_id:id})},onSuccess:()=>{setSelected([]);void query.refetch()}});
+  const confirmSelected=useMutation({mutationFn:async()=>{
+    const items=[...pendingReviews,...activeMemories,...archivedMemories,...displayedMemories];
+    for(const id of selected){
+      const item=items.find(item=>item.id===id);
+      if(!item)throw new Error('选中的记忆已变化，请刷新列表后重新选择');
+      if(memoryNeedsReplacementScope(item))throw new Error('选中记录包含需要指定替换范围的记忆，请先逐条点击“确认此记忆”处理；本次未提交批量确认');
+      if(item.adjudication?.state==='incomplete')throw new Error('选中记录的关系判断尚未完成，请先重新判断；本次未提交批量确认');
+    }
+    for(const id of selected)await rpc.call('memory.confirm',{memory_id:id});
+  },onSuccess:()=>{setSelected([]);void query.refetch()},onError:()=>void query.refetch()});
   const rejectSelected=useMutation({mutationFn:async()=>{for(const id of selected) await rpc.call('memory.reject',{memory_id:id})},onSuccess:()=>{setSelected([]);void query.refetch()}});
   const conflictDecision=useMutation({mutationFn:({id,action}:{id:string;action:string})=>rpc.call('memory.conflict.resolve',{memory_id:id,action}),onSuccess:()=>query.refetch()});
   const deleteSelected=useMutation({mutationFn:()=>rpc.call('memory.batch_delete',{memory_ids:selected}),onSuccess:()=>{setSelected([]);void query.refetch()}});
@@ -756,12 +837,14 @@ function Memory({initialMemoryId}:{initialMemoryId?:string|null}){
            <form className="memory-search-row" onSubmit={event=>{event.preventDefault();setSearching(searchText.trim())}}><input value={searchText} onChange={event=>setSearchText(event.target.value)} placeholder="搜索标题、摘要或正文"/><select value={sourceFilter} onChange={event=>setSourceFilter(event.target.value)} aria-label="按来源筛选"><option value="">全部来源</option><option value="conversation">对话</option><option value="email">邮件</option><option value="feishu">飞书</option><option value="web">网页</option></select><input value={projectFilter} onChange={event=>setProjectFilter(event.target.value)} placeholder="项目 ID（可选）" aria-label="按项目筛选"/><button type="submit" disabled={!searchText.trim()}>搜索</button>{searching&&<button type="button" onClick={()=>{setSearchText('');setSearching('');setSourceFilter('');setProjectFilter('')}}>清除</button>}</form>
           <div className="stack">
              {displayedMemories.map((item:MemoryItem)=><article className="memory-card" key={item.id}>
-              <label className="memory-select"><input type="checkbox" checked={selected.includes(item.id)} onChange={()=>toggleSelected(item.id)} aria-label={`选择${item.title}`}/><Status value={item.status}/></label><h3>{item.title}</h3><p>{item.summary}</p>
-              <div className="row-actions"><button onClick={()=>setDetail(item)}>查看详情</button>{tab==='pending_review'&&<><button onClick={()=>memoryDecision.mutate({id:item.id,accepted:false})} disabled={memoryDecision.isPending}>拒绝</button><button className="primary" onClick={()=>memoryDecision.mutate({id:item.id,accepted:true})} disabled={memoryDecision.isPending}>确认记忆</button></>}{!!item.conflicts?.length&&<><button onClick={()=>conflictDecision.mutate({id:item.id,action:'keep_old'})} disabled={conflictDecision.isPending}>保留旧记忆</button><button className="primary" onClick={()=>conflictDecision.mutate({id:item.id,action:'accept_new'})} disabled={conflictDecision.isPending}>采用新记忆</button><button onClick={()=>conflictDecision.mutate({id:item.id,action:'merge'})} disabled={conflictDecision.isPending}>合并</button></>}</div>
+              <label className="memory-select"><input type="checkbox" checked={selected.includes(item.id)} onChange={()=>toggleSelected(item.id)} aria-label={`选择${item.title}`}/><Status value={item.status}/></label><h3>{item.title}</h3><p>{item.summary}</p>{item.usage_state&&<small>{memoryUsageLabel(item.usage_state)}{item.status==='stale'?' · 长期未使用，已降低检索优先级':''}{item.usage_state==='disputed'?' · 不作为当前事实自动注入，可选人工处理':''}</small>}
+              <div className="row-actions"><button onClick={()=>setDetail(item)}>查看详情</button>{(tab==='pending_review'||item.usage_state==='disputed')&&<><button onClick={()=>memoryDecision.mutate({id:item.id,accepted:false})} disabled={memoryDecision.isPending}>拒绝</button><button className="primary" onClick={()=>memoryNeedsReplacementScope(item)?setReplacement({id:item.id,confirm:true}):memoryDecision.mutate({id:item.id,accepted:true})} disabled={memoryDecision.isPending||item.adjudication?.state==='incomplete'}>确认此记忆</button></>}{!!item.conflicts?.length&&<><button onClick={()=>conflictDecision.mutate({id:item.id,action:'keep_old'})} disabled={conflictDecision.isPending}>保留旧记忆</button><button className="primary" onClick={()=>setReplacement({id:item.id,confirm:false})} disabled={conflictDecision.isPending}>采用新记忆</button><button onClick={()=>conflictDecision.mutate({id:item.id,action:'merge'})} disabled={conflictDecision.isPending}>合并</button></>}</div>
             </article>)}
           </div>
            {!displayedMemories.length&&<Empty icon={Brain} title={searching?'没有匹配记忆':tab==='pending_review'?'没有待确认记忆':tab==='active'?'没有活跃记忆':'没有归档记忆'} hint={searching?'可以换一个关键词再试。':tab==='pending_review'?'新的长期记忆会在运行结束后显示在这里。':'稳定偏好与长期事实会在运行结束后写入。'}/>}
-          {tab==='pending_review'&&memoryDecision.error&&<p className="form-error" role="alert">记忆处理失败：{String(memoryDecision.error)}</p>}
+          {memoryDecision.error&&<p className="form-error" role="alert">记忆处理失败：{String(memoryDecision.error)}</p>}
+          {conflictDecision.error&&<p className="form-error" role="alert">争议处理失败：{String(conflictDecision.error)}</p>}
+          {confirmSelected.error&&<p className="form-error" role="alert">批量确认未全部完成：{String(confirmSelected.error)}</p>}
         </section>
       </section>
       <aside className="card memory-status-panel">
@@ -778,5 +861,6 @@ function Memory({initialMemoryId}:{initialMemoryId?:string|null}){
         {evaluateMemory.error&&<ErrorState error={evaluateMemory.error} title="记忆检查失败" retry={()=>evaluateMemory.mutate()}/>}
       </aside>
     </div>
-    {detail&&<MemoryDetail item={detail} close={()=>setDetail(null)} confidenceSource={confidenceSource} onChanged={()=>{void query.refetch();setDetail(null)}}/>}</Page>
+    {detail&&<MemoryDetail item={detail} close={()=>setDetail(null)} confidenceSource={confidenceSource} onChanged={()=>{void query.refetch();setDetail(null)}}/>}
+    {replacement&&<MemoryReplacementDialog key={`${replacement.id}-${replacement.confirm}`} memoryId={replacement.id} confirm={replacement.confirm} close={()=>setReplacement(null)} onChanged={()=>{setSelected([]);void query.refetch();void queryClient.invalidateQueries({queryKey:['memory-search']})}}/>}</Page>
 }

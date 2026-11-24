@@ -694,8 +694,8 @@ class Database:
             row = await (await db.execute("SELECT workflow_id FROM external_operations WHERE idempotency_key=?", (idempotency_key,))).fetchone()
             if row:
                 workflow_id = row["workflow_id"]
-                rows = await (await db.execute("SELECT status FROM external_operations WHERE workflow_id=?", (workflow_id,))).fetchall()
-                states = [item["status"] for item in rows]
+                rows = await (await db.execute("SELECT idempotency_key,status,arguments_json FROM external_operations WHERE workflow_id=?", (workflow_id,))).fetchall()
+                states = [item["status"] for item in self.effective_external_operations(list(rows))]
                 if "uncertain" in states or "running" in states:
                     workflow_status = "uncertain" if "uncertain" in states else "in_progress"
                 elif "partial_success" in states or ("failed" in states and "succeeded" in states):
@@ -736,11 +736,24 @@ class Database:
             )
             await db.commit()
 
+    @staticmethod
+    def effective_external_operations(rows: list[Any]) -> list[Any]:
+        ids = {row["idempotency_key"] for row in rows}
+        superseded = set()
+        for row in rows:
+            try:
+                previous = json.loads(row["arguments_json"] or "{}").get("_retry_of")
+            except (TypeError, ValueError):
+                previous = None
+            if previous in ids and previous != row["idempotency_key"]:
+                superseded.add(previous)
+        return [row for row in rows if row["idempotency_key"] not in superseded]
+
     async def finish_external_workflow(self, workflow_id: str, *, run_status: str, updated_at: str) -> None:
         async with self.connect() as db:
             await db.execute("BEGIN IMMEDIATE")
-            rows = await (await db.execute("SELECT status FROM external_operations WHERE workflow_id=?", (workflow_id,))).fetchall()
-            states = [item["status"] for item in rows]
+            rows = await (await db.execute("SELECT idempotency_key,status,arguments_json FROM external_operations WHERE workflow_id=?", (workflow_id,))).fetchall()
+            states = [item["status"] for item in self.effective_external_operations(list(rows))]
             if states:
                 if "uncertain" in states or "running" in states:
                     status = "uncertain"
@@ -752,6 +765,8 @@ class Database:
                     status = "denied"
                 elif "failed" in states:
                     status = "failed"
+                elif "awaiting_approval" in states or "approved" in states:
+                    status = "interrupted"
                 elif run_status == "completed":
                     status = "completed"
                 elif "succeeded" in states:

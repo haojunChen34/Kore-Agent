@@ -58,40 +58,15 @@ if (-not (Test-Path -LiteralPath $Python) -or -not (Test-Path -LiteralPath $Pip)
     }
   }
 
-  # Prefer 3.12, but honor the documented Python 3.11+ requirement when
-  # the Windows launcher exists without a 3.12 installation.
-  $Candidates = @()
-  if ($PyLauncher) {
-    $Candidates += @{ Executable = $PyLauncher.Source; Prefix = @('-3.12') }
-    $Candidates += @{ Executable = $PyLauncher.Source; Prefix = @('-3') }
-  }
-  if ($PythonCommand) {
-    $Candidates += @{ Executable = $PythonCommand.Source; Prefix = @() }
-  }
-  $VenvLauncher = $null
-  foreach ($Candidate in $Candidates) {
-    $ProbeArguments = @($Candidate.Prefix) + @('-c', 'import sys; print(sys.executable) if sys.version_info >= (3, 11) else sys.exit(1)')
-    try {
-      $Interpreter = & $Candidate.Executable @ProbeArguments 2>$null
-      if ($LASTEXITCODE -eq 0 -and $Interpreter -and (Test-Path -LiteralPath ([string]$Interpreter))) {
-        $VenvLauncher = [string]$Interpreter
-        break
-      }
-    } catch {
-      # Try the next installed interpreter.
-    }
-  }
-  if (-not $VenvLauncher) {
-    throw 'A working Python 3.11 or newer was not found. Install it and reopen PowerShell.'
-  }
-  Write-Host '[KoreAgent Next] Creating the Python virtual environment...'
-  $VenvArguments = @('-m', 'venv', $VirtualEnvironment)
+  Write-Host '[KoreAgent Next] Creating the Python 3.12 environment...'
+  $VenvArguments = if ($PyLauncher) { @('-3.12', '-m', 'venv', $VirtualEnvironment) } else { @('-m', 'venv', $VirtualEnvironment) }
+  $VenvLauncher = if ($PyLauncher) { $PyLauncher.Source } else { $PythonCommand.Source }
   Invoke-CheckedCommand -FilePath $VenvLauncher `
     -Arguments $VenvArguments `
     -FailureMessage 'Failed to create the Python virtual environment.'
 
   if (-not (Test-Path -LiteralPath $Python) -or -not (Test-Path -LiteralPath $Pip)) {
-    throw 'Python reported success, but the virtual environment is incomplete. Repair or reinstall Python 3.11 or newer and try again.'
+    throw 'Python reported success, but the virtual environment is incomplete. Repair or reinstall Python 3.12 and try again.'
   }
 }
 
@@ -281,7 +256,7 @@ try {
     Write-Host "[KoreAgent Next] Reusing the existing Vite dev server at $DevUrl"
     $ElectronExecutable = Join-Path $NodeModules 'electron\dist\electron.exe'
     Invoke-CheckedCommand -FilePath $ElectronExecutable `
-      -Arguments @($Desktop) `
+      -Arguments @('.') `
       -FailureMessage 'The desktop application exited with an error.'
   } else {
     Invoke-CheckedCommand -FilePath $NpmExecutable `

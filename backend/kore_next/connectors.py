@@ -877,7 +877,7 @@ class ConnectorService:
         return await self.feishu.update_document_block(token, document_id=document_id, block_id=block_id, content=content, operation_id=operation_id)
 
     async def create_feishu_event(
-        self, *, title: str, starts_at: str, ends_at: str, description: str = "", location: str = "", operation_id: str | None = None
+        self, *, title: str, starts_at: str, ends_at: str, description: str = "", location: str = "", timezone: str | None = None, participants: list[Any] | None = None, operation_id: str | None = None
     ) -> dict[str, Any]:  # noqa: E501
         token = await self._feishu_access_token()
         return await self.feishu.create_calendar_event(
@@ -887,6 +887,8 @@ class ConnectorService:
             ends_at=ends_at,
             description=description,
             location=location,
+            timezone=timezone,
+            participants=participants,
             operation_id=operation_id,
         )
 
@@ -899,12 +901,14 @@ class ConnectorService:
         ends_at: str | None = None,
         description: str | None = None,
         location: str | None = None,
+        timezone: str | None = None,
         operation_id: str | None = None,
     ) -> dict[str, Any]:
         token = await self._feishu_access_token()
         return await self.feishu.update_calendar_event(
             token,
             event_id=event_id,
+            timezone=timezone,
             title=title,
             starts_at=starts_at,
             ends_at=ends_at,

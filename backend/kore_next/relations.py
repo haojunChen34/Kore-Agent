@@ -14,7 +14,7 @@ class ContextRelationService:
     async def rebuild(self, db: Database) -> dict[str, int]:
         rows = await db.fetchall("SELECT id,provider,kind,data_json FROM connector_items WHERE status='active'")
         items = [(str(row["id"]), str(row["provider"]), str(row["kind"]), loads(row["data_json"], {})) for row in rows]
-        await db.execute("DELETE FROM context_links WHERE source_type='connector_item'")
+        await db.execute("DELETE FROM context_links WHERE source_type='connector_item' AND target_type='connector_item'")
         created = 0
         for index, left in enumerate(items):
             for right in items[index + 1 :]:

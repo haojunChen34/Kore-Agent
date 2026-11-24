@@ -59,7 +59,7 @@ class RpcClient {
       // Reworking an external-information suggestion invokes the summary
       // model directly. It can take longer than the ordinary 30-second UI
       // request window (the Host itself remains healthy while it waits).
-      const timeout = method==='conversation.send'||method==='run.recover'||method==='task.plan_accept'?30*60_000:method==='external.information.chat'||method==='goal.plan.preview'||method==='goal.plan.discuss'?10*60_000:30_000
+      const timeout = method==='memory.reassess'?16*60_000:method==='conversation.send'||method==='run.recover'||method==='task.plan_accept'?30*60_000:method==='external.information.chat'||method==='goal.plan.preview'||method==='goal.plan.discuss'?10*60_000:30_000
       const timer=window.setTimeout(()=>{this.pending.delete(id);reject(new Error(`${method} 请求超时，请检查 Host 状态后重试。`))},timeout)
       this.pending.set(id, { resolve, reject, timer }); this.socket!.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }))
     })

@@ -4,7 +4,6 @@ backend/.koreagent-next/
 workspace/
 backend/workspace/
 .env
-.env.*
 backend/.env
 backend/scope-list.json
 !.env.example
@@ -46,7 +45,6 @@ Thumbs.db
 *.log
 
 # Local test and temporary artifacts
-.tmp*
 chat_return.txt
 *.db
 *.sqlite
@@ -55,3 +53,23 @@ chat_return.txt
 attachments/
 artifacts/
 
+
+# Publication boundaries: keep live evidence and memory experiments local.
+.tmp*
+evals/runs/
+evals/results*/
+evals/archive/
+evals/memory/
+evals/memprobe/
+evals/longmemeval/
+evals/dolphinbench/
+evals/personal_agent_memory_eval*.json
+docs/MEMORY_TEST_PLAN.md
+docs/*memory*-tests.json
+docs/*memory*-offline.json
+node_modules/
+.venv/
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm

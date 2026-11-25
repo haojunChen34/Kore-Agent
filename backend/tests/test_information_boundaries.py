@@ -56,14 +56,32 @@ class InformationBoundariesTests(unittest.IsolatedAsyncioTestCase):
     async def test_late_analysis_cannot_replace_new_source_version(self):
         source, info = await self.source()
         self.app._role_model_config = AsyncMock(return_value={'provider': 'test'})
+        self.app.broadcast = AsyncMock()
         async def reply(*args, **kwargs):
             await self.app.db.execute("UPDATE external_information SET content_fingerprint='newer',analysis_json=? WHERE id=?", (dumps({'summary': 'New source'}), info['id']))
             from types import SimpleNamespace
             return SimpleNamespace(content=dumps({'summary': 'Late old source'}))
         with patch('kore_next.application.ModelClient.complete', side_effect=reply):
-            await self.app.external_information_chat({'information_id': info['id'], 'message': 'Adjust'})
+            result = await self.app.external_information_chat({'information_id': info['id'], 'message': 'Adjust'})
         row = await self.app.db.fetchone('SELECT analysis_json FROM external_information WHERE id=?', (info['id'],))
         self.assertIn('New source', row['analysis_json'])
+        self.assertTrue(result['stale'])
+        self.assertEqual(result['analysis']['summary'], 'New source')
+        self.app.broadcast.assert_not_awaited()
+
+    async def test_analysis_deleted_while_model_waits_returns_clear_error(self):
+        _, info = await self.source()
+        self.app._role_model_config = AsyncMock(return_value={'provider': 'test'})
+        self.app.broadcast = AsyncMock()
+        async def reply(*args, **kwargs):
+            await self.app.db.execute('DELETE FROM external_information WHERE id=?', (info['id'],))
+            from types import SimpleNamespace
+            return SimpleNamespace(content=dumps({'summary': 'Late result'}))
+        from kore_next.application import RpcFault
+        with patch('kore_next.application.ModelClient.complete', side_effect=reply):
+            with self.assertRaisesRegex(RpcFault, '未保存'):
+                await self.app.external_information_chat({'information_id': info['id'], 'message': 'Adjust'})
+        self.app.broadcast.assert_not_awaited()
 
     def test_source_date_is_separate_from_analysis_date(self):
         prompt = analysis_prompt({'sent_at': '2030-03-04T09:00:00+09:00', 'received_at': '2030-03-06T09:00:00Z', 'body': 'Tomorrow at 18:00', '_analysis_timezone': 'Asia/Tokyo'})

@@ -3925,12 +3925,17 @@ class Application:
                     await self.broadcast("approval.resolved",redact(approval))
                     raise
             linked_run = await (await db.execute("SELECT status FROM runs WHERE id=?", (approval.get("run_id"),))).fetchone()
-            if linked_run and linked_run["status"] not in {"pending", "running"}:
+            # A stopped run cannot be authorized by its old card. An explicit
+            # once-only refusal is still meaningful for a later recovery.
+            late_refusal = bool(not decision and scope == "once" and linked_run
+                                and linked_run["status"] in {"interrupted", "cancelled", "failed"}
+                                and approval["status"] in {"pending", "cancelled"})
+            if linked_run and linked_run["status"] not in {"pending", "running"} and not late_refusal:
                 cancelled = await cancel_pending(db, approval["run_id"])
                 await db.commit()
                 await self._publish_cancelled_approvals(cancelled)
                 raise RpcFault(-32001, "关联任务已停止，旧审批已失效；请重新发起执行请求。")
-            if approval["status"] != "pending":
+            if approval["status"] != "pending" and not late_refusal:
                 raise RpcFault(-32001, "Approval is already resolved")
             if scope not in {"once", "run", "conversation", "global"}:
                 raise RpcFault(-32602, "scope must be once, run, conversation, or global")
@@ -5869,13 +5874,22 @@ class Application:
         except Exception as exc:
             raise RpcFault(-32000, f"\u5206\u6790\u5931\u8d25\uff1a{str(exc)[:300]}") from exc
         stamp = now()
-        await self.db.execute(
-            "UPDATE external_information SET relevance=?,status='needs_review',analysis_json=?,updated_at=?,analyzed_at=? WHERE id=? AND content_fingerprint=?",
-            (str(analysis.get("relevance") or "needs_review"), dumps(analysis), stamp, stamp, information_id, row["content_fingerprint"]),
-        )
-        await self.broadcast("external_information.updated", {"id": information_id, "status": "needs_review", "analysis": analysis})
-        updated = await self.db.fetchone("SELECT * FROM external_information WHERE id=?", (information_id,))
+        async with self.db.connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            changed = await db.execute(
+                "UPDATE external_information SET relevance=?,status='needs_review',analysis_json=?,updated_at=?,analyzed_at=? WHERE id=? AND content_fingerprint=?",
+                (str(analysis.get("relevance") or "needs_review"), dumps(analysis), stamp, stamp, information_id, row["content_fingerprint"]),
+            )
+            applied = bool(changed.rowcount)
+            updated = await (await db.execute("SELECT * FROM external_information WHERE id=?", (information_id,))).fetchone()
+            await db.commit()
+        if not updated:
+            raise RpcFault(-32000, "来源分析已删除，本次修改建议未保存。")
         updated_item = await self._external_item(updated)
+        if not applied:
+            return {"message": "来源已更新，本次旧版本分析未保存；请查看最新内容后再修改建议。", "stale": True,
+                    "analysis": updated_item.get("analysis") or {}, "item": updated_item}
+        await self.broadcast("external_information.updated", {"id": information_id, "status": "needs_review", "analysis": analysis})
         return {"message": "\u5df2\u6839\u636e\u4f60\u7684\u8981\u6c42\u751f\u6210\u65b0\u7684\u5efa\u8bae\uff0c\u786e\u8ba4\u540e\u624d\u4f1a\u521b\u5efa\u672c\u5730\u884c\u52a8\u3002", "analysis": analysis, "item": updated_item}
 
     async def connector_item_update(self, params: dict[str, Any]) -> dict[str, Any]:

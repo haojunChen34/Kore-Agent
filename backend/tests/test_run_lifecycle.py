@@ -125,6 +125,19 @@ class RunLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(await self.app.db.fetchall('SELECT * FROM permission_rules')),1)
         self.assertEqual((await self.app._approval_payload('card',redact_output=False))['status'],'approved')
 
+    async def test_explicit_refusal_after_interrupt_is_preserved_for_recovery(self):
+        run = await self.seed('running')
+        await self.approval(run)
+        await self.app.run_interrupt({'run_id': run['id']})
+        with self.assertRaises(RpcFault):
+            await self.app._resolve_approval('card', True)
+        result = await self.app._resolve_approval('card', False)
+        self.assertEqual(result['approval']['status'], 'denied')
+        self.assertEqual(len(await self.app.db.fetchall('SELECT * FROM permission_rules')), 0)
+        _, state = await claim_recovery(self.app.db, run['id'], self.app.settings.workspace_dir)
+        self.assertIn('email_send', state['model_messages'][-1]['content'])
+        self.assertIn('user denied', state['model_messages'][-1]['content'])
+
     async def test_approval_and_rule_rollback_together(self):
         run=await self.seed('running')
         await self.approval(run)

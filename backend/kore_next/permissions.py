@@ -93,6 +93,7 @@ class PermissionRuleStore:
         scope_id: str,
         arguments: dict[str, Any],
         description: str,
+        connection: Any = None,
     ) -> dict[str, Any]:
         if effect not in {"allow", "deny"}:
             raise ValueError("permission effect must be allow or deny")
@@ -109,7 +110,7 @@ class PermissionRuleStore:
             "description": description,
             "created_at": now(),
         }
-        await self.db.execute(
+        await (connection or self.db).execute(
             "INSERT INTO permission_rules(id,tool_name,effect,scope,scope_id,matcher_json,description,created_at) VALUES(?,?,?,?,?,?,?,?)",
             (
                 rule["id"],

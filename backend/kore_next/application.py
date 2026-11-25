@@ -24,6 +24,7 @@ from .config import Settings
 from .connectors import ConnectorService
 from .context import ContextDecision, ContextManager, context_window_info
 from .database import Database
+from .errors import RpcFault
 from .evidence import EvidenceStore
 from .external_information import (
     analysis_prompt,
@@ -53,6 +54,7 @@ from .proactive import ProactiveService
 from .real_connectors import ConnectorConfigurationError, ConnectorPartialSuccess
 from .research import WebResearchService, build_research_report, semantic_diff_summary
 from .run_insights import summarize_run_usage
+from .run_lifecycle import cancel_pending, claim_recovery, insert_run
 from .runtime_policy import RepeatedToolCallGuard, RunBudget, RunBudgetConfig, RunBudgetController, RuntimePolicyError, validate_budget_preferences
 from .secrets import SecretStore
 from .security import redact, redact_text
@@ -92,10 +94,6 @@ PROACTIVE_EXTERNAL_TOOLS = {
 }
 
 
-class RpcFault(Exception):
-    def __init__(self, code: int, message: str, data: Any = None):
-        super().__init__(message)
-        self.code, self.message, self.data = code, message, data
 
 
 def required(params: dict[str, Any], key: str) -> Any:
@@ -145,6 +143,7 @@ class Application:
         self.broadcast: Broadcaster = self._noop
         self.approval_waiters: dict[str, asyncio.Future[bool]] = {}
         self.running: dict[str, asyncio.Task[Any]] = {}
+        self.workspace_lock = asyncio.Lock()
         self.background_tasks: set[asyncio.Task[Any]] = set()
         self.triggering_automations: set[str] = set()
         self.automation_task: asyncio.Task[Any] | None = None
@@ -189,9 +188,14 @@ class Application:
         await self._run_memory_maintenance()
         await self.db.recover_running_external_operations(updated_at=now())
         await self.db.execute(
-            "UPDATE runs SET status='interrupted',stop_reason='host_restart',updated_at=? WHERE status='running'",
+            "UPDATE runs SET status='interrupted',stop_reason='host_restart',updated_at=? "
+            "WHERE status='running' OR (status='pending' AND (COALESCE(source,'')!='automation' "
+            "OR id NOT IN (SELECT run_id FROM run_context)))",
             (now(),),
         )
+        stopped = await self.db.fetchall("SELECT id FROM runs WHERE status NOT IN ('pending','running')")
+        for stopped_run in stopped:
+            await self._invalidate_run_approvals(stopped_run['id'])
         # Default proactive rules are part of the local app contract. Older
         # builds removed them during initialization and then skipped restoring
         # them forever because ``app_initialized`` stayed true. Repair that
@@ -808,6 +812,13 @@ class Application:
 
     async def workspace_set(self, params: dict[str, Any]) -> dict[str, str]:
         """Switch the active workspace for file tools, search, Shell and MCP."""
+        async with self.workspace_lock:
+            return await self._workspace_set(params)
+
+    async def _workspace_set(self, params: dict[str, Any]) -> dict[str, str]:
+        pending = await self.db.fetchall("SELECT id FROM runs WHERE status IN ('pending','running')")
+        if pending:
+            raise RpcFault(-32001, "Workspace change is blocked by active runs", {"run_ids": [r["id"] for r in pending]})
         active = [rid for rid, task in self.running.items() if not task.done()]
         if active:
             raise RpcFault(-32001, "Workspace change is blocked by active runs", {"run_ids": active})
@@ -2302,30 +2313,11 @@ class Application:
             # schema or trace contract.
             "plan_task_id": extra.get("plan_task_id"),
         }
-        await self.db.execute(
-            "INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            tuple(
-                run[k]
-                for k in (
-                    "id",
-                    "conversation_id",
-                    "status",
-                    "user_message",
-                    "created_at",
-                    "started_at",
-                    "updated_at",
-                    "completed_at",
-                    "error",
-                    "stop_reason",
-                    "recovered_from_run_id",
-                    "source",
-                    "source_id",
-                    "scheduled_for",
-                    "triggered_at",
-                    "mode",
-                )
-            ),
-        )
+        async with self.workspace_lock:
+            async with self.db.connect() as db:
+                await db.execute("BEGIN IMMEDIATE")
+                await insert_run(db, run, self.settings.workspace_dir)
+                await db.commit()
         return run
 
     async def _save_run(self, run: dict[str, Any]) -> None:
@@ -2491,8 +2483,19 @@ class Application:
             await self.broadcast("personal.notification", redact(notification))
 
     async def _execute_run(self, run: dict[str, Any], recovery_state: dict[str, Any] | None = None) -> dict[str, Any]:
-        run.update(status="running", started_at=now(), updated_at=now())
-        await self._save_run(run)
+        async with self.db.connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            current = await (await db.execute("SELECT status FROM runs WHERE id=?", (run["id"],))).fetchone()
+            if not current or current["status"] != "pending":
+                raise RpcFault(-32001, "Run is no longer pending")
+            context = await (await db.execute("SELECT workspace_path FROM run_context WHERE run_id=?", (run["id"],))).fetchone()
+            if not context or Path(context["workspace_path"]).resolve() != self.settings.workspace_dir.resolve():
+                await db.execute("UPDATE runs SET status='interrupted',stop_reason='workspace_mismatch',updated_at=? WHERE id=?", (now(), run["id"]))
+                await db.commit()
+                raise RpcFault(-32001, "运行工作区不匹配，已阻止执行。")
+            run.update(status="running", started_at=now(), updated_at=now())
+            await db.execute("UPDATE runs SET status='running',started_at=?,updated_at=? WHERE id=?", (run["started_at"], run["updated_at"], run["id"]))
+            await db.commit()
         await self._event(run, "agent_started", message=None, tool_call=None, tool_result=None, usage=None)
         try:
             model_config = await self._active_model_config()
@@ -3174,6 +3177,7 @@ class Application:
         except asyncio.CancelledError:
             run.update(status="cancelled", updated_at=now(), completed_at=now(), stop_reason="cancelled")
             await self._save_run(run)
+            await self._invalidate_run_approvals(run["id"])
             await self.db.finish_external_workflow(await self._external_workflow_id(run["id"]), run_status="cancelled", updated_at=now())
             raise
         except Exception as exc:
@@ -3573,6 +3577,13 @@ class Application:
 
     async def run_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
         rid = str(required(params, "run_id"))
+        await self.run_get({"run_id": rid})
+        async with self.db.connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute("UPDATE runs SET status='cancelled',stop_reason='cancelled',updated_at=?,completed_at=? "
+                             "WHERE id=? AND status IN ('pending','running')", (now(), now(), rid))
+            cancelled = await cancel_pending(db, rid)
+            await db.commit()
         task = self.running.get(rid)
         if task and not task.done():
             task.cancel()
@@ -3580,7 +3591,22 @@ class Application:
                 await task
             except (asyncio.CancelledError, RpcFault):
                 pass
+        await self._publish_cancelled_approvals(cancelled)
         return await self.run_get({"run_id": rid})
+
+    async def _publish_cancelled_approvals(self, approvals: list[dict[str, Any]]) -> None:
+        for approval in approvals:
+            waiter = self.approval_waiters.get(approval["id"])
+            if waiter and not waiter.done():
+                waiter.set_result(False)
+            await self.broadcast("approval.resolved", redact(approval))
+
+    async def _invalidate_run_approvals(self, run_id: str) -> None:
+        async with self.db.connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cancelled = await cancel_pending(db, run_id)
+            await db.commit()
+        await self._publish_cancelled_approvals(cancelled)
 
     async def run_interrupt(self, params: dict[str, Any]) -> dict[str, Any]:
         result = await self.run_cancel(params)
@@ -3593,26 +3619,16 @@ class Application:
         return await self.run_get(params)
 
     async def run_recover(self, params: dict[str, Any]) -> dict[str, Any]:
-        old = (await self.run_get(params))["run"]
-        if old["status"] not in {"failed", "cancelled", "interrupted"}:
-            raise RpcFault(-32001, "Run is not recoverable")
-        checkpoint = await self.checkpoints.get(old["id"])
-        if checkpoint is None:
-            raise RpcFault(-32001, "Run has no recoverable checkpoint")
-        run = await self._new_run(
-            old["conversation_id"],
-            old["user_message"],
-            old["mode"],
-            recovered_from_run_id=old["id"],
-        )
-        await self.checkpoints.clone(old["id"], run["id"])
-        task = asyncio.create_task(self._execute_run(run, checkpoint["state"]))
-        self.running[run["id"]] = task
+        source_id = str(required(params, "run_id"))
+        async with self.workspace_lock:
+            run, state = await claim_recovery(self.db, source_id, self.settings.workspace_dir)
+            task = asyncio.create_task(self._execute_run(run, state))
+            self.running[run["id"]] = task
         try:
             result = await task
         finally:
             self.running.pop(run["id"], None)
-        return {"recovered_from_run_id": old["id"], "run": run, "result": result}
+        return {"recovered_from_run_id": source_id, "run": run, "result": result}
 
     async def trace_get(self, params: dict[str, Any]) -> dict[str, Any]:
         run = (await self.run_get(params))["run"]
@@ -3658,10 +3674,10 @@ class Application:
     async def _request_approval(self, run_id: str, call_id: str, arguments: dict[str, Any], reason: str) -> bool:
         stamp, aid = now(), uid()
         tool_name = str(arguments.get("tool_name") or "tool")
-        try:
-            conversation_id = (await self.run_get({"run_id": run_id}))["run"].get("conversation_id")
-        except RpcFault:
-            conversation_id = None
+        run_record = await self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
+        if run_record and run_record["status"] not in {"pending", "running"}:
+            return False
+        conversation_id = run_record["conversation_id"] if run_record else None
         verdict = await self.permission_rules.evaluate(
             tool_name=tool_name,
             conversation_id=conversation_id,
@@ -3693,17 +3709,19 @@ class Application:
             "matched_rule_id": None,
             "available_scopes": ["once", "run", "conversation", "global"] if self.permission_rules.signing_key else ["once"],
         }
-        await self.db.execute("INSERT INTO approvals VALUES(?,?,?,?)", (aid, dumps(approval), "pending", stamp))
-        external_operation_id = str(arguments.get("external_operation_id") or "")
-        if external_operation_id:
-            await self.db.update_external_operation(
-                external_operation_id,
-                status="awaiting_approval",
-                approval_id=aid,
-                updated_at=stamp,
-            )
         future = asyncio.get_running_loop().create_future()
-        self.approval_waiters[aid] = future
+        async with self.db.connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            current = await (await db.execute("SELECT status FROM runs WHERE id=?", (run_id,))).fetchone()
+            if current and current["status"] not in {"pending", "running"}:
+                return False
+            await db.execute("INSERT INTO approvals VALUES(?,?,?,?)", (aid, dumps(approval), "pending", stamp))
+            external_operation_id = str(arguments.get("external_operation_id") or "")
+            if external_operation_id:
+                await db.execute("UPDATE external_operations SET approval_id=?,updated_at=? "
+                                 "WHERE idempotency_key=? AND status='awaiting_approval'", (aid, stamp, external_operation_id))
+            self.approval_waiters[aid] = future
+            await db.commit()
         await self.broadcast("approval.required", approval)
         try:
             run_record = (await self.run_get({"run_id": run_id}))["run"]
@@ -3723,28 +3741,25 @@ class Application:
             return await future
         finally:
             self.approval_waiters.pop(aid, None)
+            if future.cancelled():
+                await self._cancel_approval(aid)
 
     async def _cancel_approval(self, approval_id: str) -> None:
-        try:
-            approval = await self._approval_payload(approval_id, redact_output=False)
-        except RpcFault:
-            return
-        if approval.get("status") != "pending":
-            return
-        approval.update(status="cancelled", resolved_at=now())
-        await self.db.execute(
-            "UPDATE approvals SET data_json=?,status=? WHERE id=?",
-            (dumps(approval), "cancelled", approval_id),
-        )
-        external_operation_id = str((approval.get("arguments") or {}).get("external_operation_id") or "")
-        if external_operation_id:
-            await self.db.update_external_operation(
-                external_operation_id,
-                status="failed",
-                error="Approval wait was cancelled before execution",
-                updated_at=now(),
-            )
-        await self.broadcast("approval.resolved", redact(approval))
+        async with self.db.connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (await db.execute("SELECT data_json,status FROM approvals WHERE id=?", (approval_id,))).fetchone()
+            if not row or row["status"] != "pending":
+                return
+            approval = loads(row["data_json"], {})
+            approval.update(status="cancelled", resolved_at=now())
+            await db.execute("UPDATE approvals SET data_json=?,status='cancelled' WHERE id=?", (dumps(approval), approval_id))
+            operation_id = str((approval.get("arguments") or {}).get("external_operation_id") or "")
+            if operation_id:
+                await db.execute("UPDATE external_operations SET status='denied',error=?,updated_at=? "
+                                 "WHERE idempotency_key=? AND status IN ('awaiting_approval','approved')",
+                                 ("Approval wait was cancelled before execution", now(), operation_id))
+            await db.commit()
+        await self._publish_cancelled_approvals([approval])
 
     async def approval_list(self, params: dict[str, Any]) -> dict[str, Any]:
         status = params.get("status")
@@ -3841,51 +3856,60 @@ class Application:
             await self.broadcast("external_information.updated", {"id": information_id, "status": "needs_review", "error": str(exc)[:300]})
 
     async def _resolve_approval(self, aid: str, decision: bool, *, scope: str = "once") -> dict[str, Any]:
-        approval = await self._approval_payload(aid, redact_output=False)
-        if approval["status"] != "pending":
-            raise RpcFault(-32001, "Approval is already resolved")
-        if scope not in {"once", "run", "conversation", "global"}:
-            raise RpcFault(-32602, "scope must be once, run, conversation, or global")
-        if scope != "once" and self.permission_rules.signing_key is None:
-            raise RpcFault(-32001, "Persistent approval rules require an OS-protected signing key")
-        rule = None
-        if scope != "once":
-            # Persistent decisions are bound to the exact tool arguments and the
-            # chosen scope; an edited command must be approved separately.
-            scope_id = {
-                "run": str(approval.get("run_id") or ""),
-                "conversation": str(approval.get("conversation_id") or ""),
-                "global": "*",
-            }[scope]
-            if not scope_id:
-                raise RpcFault(-32602, f"{scope} scope is unavailable for this approval")
-            rule = await self.permission_rules.add(
-                tool_name=str(approval.get("tool_name") or "tool"),
-                effect="allow" if decision else "deny",
-                scope=scope,
-                scope_id=scope_id,
-                arguments=approval.get("arguments") or {},
-                description=str(approval.get("reason") or "User decision"),
-            )
-        approval.update(
-            status="approved" if decision else "denied",
-            resolved_at=now(),
-            resolution_scope=scope,
-            created_rule_id=rule["id"] if rule else None,
-        )
-        await self.db.execute(
-            "UPDATE approvals SET data_json=?,status=? WHERE id=?",
-            (dumps(approval), approval["status"], aid),
-        )
-        external_operation_id = str((approval.get("arguments") or {}).get("external_operation_id") or "")
-        if external_operation_id:
-            await self.db.update_external_operation(
-                external_operation_id,
+        async with self.db.connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (await db.execute("SELECT data_json FROM approvals WHERE id=?", (aid,))).fetchone()
+            if not row:
+                raise RpcFault(-32000, "Approval not found")
+            approval = loads(row["data_json"], {})
+            linked_run = await (await db.execute("SELECT status FROM runs WHERE id=?", (approval.get("run_id"),))).fetchone()
+            if linked_run and linked_run["status"] not in {"pending", "running"}:
+                cancelled = await cancel_pending(db, approval["run_id"])
+                await db.commit()
+                await self._publish_cancelled_approvals(cancelled)
+                raise RpcFault(-32001, "关联任务已停止，旧审批已失效；请重新发起执行请求。")
+            if approval["status"] != "pending":
+                raise RpcFault(-32001, "Approval is already resolved")
+            if scope not in {"once", "run", "conversation", "global"}:
+                raise RpcFault(-32602, "scope must be once, run, conversation, or global")
+            if scope != "once" and self.permission_rules.signing_key is None:
+                raise RpcFault(-32001, "Persistent approval rules require an OS-protected signing key")
+            rule = None
+            if scope != "once":
+                # Persistent decisions are bound to the exact tool arguments and the
+                # chosen scope; an edited command must be approved separately.
+                scope_id = {
+                    "run": str(approval.get("run_id") or ""),
+                    "conversation": str(approval.get("conversation_id") or ""),
+                    "global": "*",
+                }[scope]
+                if not scope_id:
+                    raise RpcFault(-32602, f"{scope} scope is unavailable for this approval")
+                rule = await self.permission_rules.add(
+                    tool_name=str(approval.get("tool_name") or "tool"),
+                    effect="allow" if decision else "deny",
+                    scope=scope,
+                    scope_id=scope_id,
+                    arguments=approval.get("arguments") or {},
+                    description=str(approval.get("reason") or "User decision"),
+                    connection=db,
+                )
+            approval.update(
                 status="approved" if decision else "denied",
-                error=None if decision else "User denied the operation",
-                approval_id=aid,
-                updated_at=now(),
+                resolved_at=now(),
+                resolution_scope=scope,
+                created_rule_id=rule["id"] if rule else None,
             )
+            await db.execute(
+                "UPDATE approvals SET data_json=?,status=? WHERE id=?",
+                (dumps(approval), approval["status"], aid),
+            )
+            external_operation_id = str((approval.get("arguments") or {}).get("external_operation_id") or "")
+            if external_operation_id:
+                await db.execute("UPDATE external_operations SET status=?,error=?,approval_id=?,updated_at=? "
+                                 "WHERE idempotency_key=? AND status='awaiting_approval'",
+                                 (approval["status"], None if decision else "User denied the operation", aid, now(), external_operation_id))
+            await db.commit()
         waiter = self.approval_waiters.get(aid)
         if waiter and not waiter.done():
             waiter.set_result(decision)
@@ -6362,6 +6386,10 @@ class Application:
 
     async def _claim_automation_occurrence(self, automation_id: str) -> dict[str, Any] | None:
         """Claim a due occurrence and create its message/run in one SQLite transaction."""
+        async with self.workspace_lock:
+            return await self._claim_automation_in_workspace(automation_id)
+
+    async def _claim_automation_in_workspace(self, automation_id: str) -> dict[str, Any] | None:
         async with self.db.connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             row = await (await db.execute("SELECT data_json FROM automations WHERE id=?", (automation_id,))).fetchone()
@@ -6458,6 +6486,7 @@ class Application:
                     )
                 ),
             )
+            await db.execute("INSERT INTO run_context(run_id,workspace_path) VALUES(?,?)", (rid, str(self.settings.workspace_dir.resolve())))
             trigger_id = hashlib.sha256(f"{automation_id}\0{scheduled_for}".encode()).hexdigest()
             await db.execute(
                 "INSERT INTO automation_occurrences VALUES(?,?,?,?,?,?)",
@@ -6627,7 +6656,7 @@ class Application:
             # and several child operations.  Preserve the root workflow ID so
             # the external-operations UI can show and resume every step.
             operation_workflow_id = str(operation.get("workflow_id") or workflow_id or operation_id)
-            await self.db.start_external_operation(operation_id, updated_at=now())
+            await self.db.start_external_operation(operation_id, updated_at=now(), run_id=run_id)
             clean = {key: value for key, value in arguments.items() if key not in {"external_operation_id", "idempotency_key"}}
             try:
                 if name == "feishu_task_create":
@@ -6777,6 +6806,10 @@ class Application:
                         forward_message_id=clean.get("forward_message_id"),
                         operation_id=operation_id,
                     )
+            except asyncio.CancelledError:
+                await self.db.finish_external_operation(idempotency_key=operation_id, status="uncertain",
+                                                        error="任务在外部请求期间停止，须核实远端结果。", updated_at=now())
+                raise
             except ConnectorPartialSuccess as exc:
                 operation_status = str(exc.result.get("status") or "partial_success")
                 await self.db.finish_external_operation(

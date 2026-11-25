@@ -49,6 +49,12 @@ CREATE TABLE IF NOT EXISTS events(
  id TEXT PRIMARY KEY, run_id TEXT NOT NULL, sequence INTEGER NOT NULL, type TEXT NOT NULL,
  event_time TEXT NOT NULL, data_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS run_context(
+ run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE, workspace_path TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS run_recoveries(
+ source_run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE, child_run_id TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS tasks(
  id TEXT PRIMARY KEY, data_json TEXT NOT NULL, updated_at TEXT NOT NULL
 );
@@ -281,7 +287,7 @@ CREATE INDEX IF NOT EXISTS idx_system_errors_provider ON system_errors(provider,
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
 """
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 
 class DatabaseAlreadyInUseError(RuntimeError):
@@ -632,9 +638,13 @@ class Database:
             await db.commit()
             return dict(row), claimed
 
-    async def start_external_operation(self, idempotency_key: str, *, updated_at: str) -> dict[str, Any]:
+    async def start_external_operation(self, idempotency_key: str, *, updated_at: str, run_id: str | None = None) -> dict[str, Any]:
         async with self.connect() as db:
             await db.execute("BEGIN IMMEDIATE")
+            if run_id:
+                run = await (await db.execute("SELECT status FROM runs WHERE id=?", (run_id,))).fetchone()
+                if not run or run["status"] not in {"pending", "running"}:
+                    raise RuntimeError("关联任务已停止，不能执行旧请求。")
             row = await (await db.execute("SELECT * FROM external_operations WHERE idempotency_key=?", (idempotency_key,))).fetchone()
             if row is None:
                 await db.rollback()
@@ -649,6 +659,8 @@ class Database:
             elif status == "running":
                 await db.rollback()
                 raise RuntimeError("This external operation is already in progress")
+            else:
+                raise RuntimeError(f"External operation is {status}; a new approval is required")
             await db.commit()
             return dict(row)
 

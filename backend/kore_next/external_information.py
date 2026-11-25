@@ -19,7 +19,14 @@ def text_for_item(item: dict[str, Any]) -> str:
 
 
 def fingerprint(item: dict[str, Any]) -> str:
-    return hashlib.sha256(text_for_item(item).encode("utf-8", "ignore")).hexdigest()
+    # Include actionable state and addressing, but exclude local read markers
+    # and ingestion timestamps that change without changing the source.
+    semantic = {key:item.get(key) for key in ("kind", "provider", "source_id", "message_id", "sender", "from", "to",
+                                            "due_at", "starts_at", "ends_at", "location", "status", "attachments")}
+    semantic["text"] = text_for_item(item)
+    if item.get("kind") == "todo" or item.get("provider") == "todo":
+        semantic["is_done"] = bool(item.get("is_done"))
+    return hashlib.sha256(json.dumps(semantic,sort_keys=True,ensure_ascii=False,default=str).encode("utf-8", "ignore")).hexdigest()
 
 
 def _action_type(entry: dict[str, Any], title: str, description: str) -> str:
@@ -273,6 +280,9 @@ def default_analysis(item: dict[str, Any]) -> dict[str, Any]:
     summary = str(item.get("summary") or item.get("body") or item.get("description") or title).strip()
     summary = re.sub(r"\s+", " ", summary)[:360]
     suggested: list[dict[str, Any]] = []
+    completed = (item.get("kind") == "todo" or item.get("provider") == "todo") and bool(item.get("is_done"))
+    if completed:
+        relevance, importance, summary = "ordinary", "low", f"已完成：{title}。无需继续催办这项任务。"
     if relevance == "action":
         suggested.append({
             "title": title[:160],

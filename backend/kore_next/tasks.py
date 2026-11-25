@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from .database import Database
+from .linked_progress import task_to_actions
 from .util import dumps, loads, now, uid
 
 TASK_STATUSES = {"pending", "active", "blocked", "completed", "cancelled"}
@@ -140,26 +141,40 @@ class TaskService:
         return repaired
 
     async def update(self, task_id: str, changes: dict[str, Any], *, run_id: str | None = None) -> dict[str, Any]:
-        task = await self.get(task_id)
-        for key in ("title", "description", "goal", "goal_id", "long_term", "priority", "constraints", "state", "key_facts"):
-            if key in changes:
-                task[key] = changes[key]
-        if "status" in changes:
-            status = str(changes["status"])
-            if status not in TASK_STATUSES:
-                raise ValueError("invalid task status")
-            task["status"] = status
-            task["completed_at"] = now() if status == "completed" else None
-        if "steps" in changes:
-            task["steps"] = self._merge_steps(task.get("steps", []), changes["steps"])
-            if task.get("status") == "pending":
-                self._collapse_verification_tail(task["steps"])
-        if run_id and run_id not in task.get("run_ids", []):
-            task.setdefault("run_ids", []).append(run_id)
-        task["revision"] = int(task.get("revision", 1)) + 1
-        task["updated_at"] = now()
-        await self._save(task)
-        return task
+        async with self.db.connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (await db.execute("SELECT data_json FROM tasks WHERE id=?", (task_id,))).fetchone()
+            if not row:
+                raise KeyError("task not found")
+            previous = loads(row["data_json"], {})
+            task = loads(row["data_json"], {})
+            for key in ("title", "description", "goal", "goal_id", "long_term", "priority", "constraints", "state", "key_facts"):
+                if key in changes:
+                    task[key] = changes[key]
+            if "status" in changes:
+                status = str(changes["status"])
+                if status not in TASK_STATUSES:
+                    raise ValueError("invalid task status")
+                task["status"] = status
+                task["completed_at"] = now() if status == "completed" else None
+            if "steps" in changes:
+                task["steps"] = self._merge_steps(task.get("steps", []), changes["steps"])
+                if task.get("status") == "pending":
+                    self._collapse_verification_tail(task["steps"])
+                elif task.get("status") != "cancelled" and "status" not in changes:
+                    all_done = bool(task["steps"]) and all(step.get("status") in {"completed", "skipped"} for step in task["steps"])
+                    if all_done:
+                        task.update(status="completed", completed_at=task.get("completed_at") or now())
+                    elif task.get("status") == "completed":
+                        task.update(status="active", completed_at=None)
+            if run_id and run_id not in task.get("run_ids", []):
+                task.setdefault("run_ids", []).append(run_id)
+            task["revision"] = int(task.get("revision", 1)) + 1
+            task["updated_at"] = now()
+            await db.execute("UPDATE tasks SET data_json=?,updated_at=? WHERE id=?", (dumps(task),task["updated_at"],task["id"]))
+            await task_to_actions(db, task, previous)
+            await db.commit()
+            return task
 
     async def decide(self, task_id: str, accepted: bool) -> dict[str, Any]:
         task = await self.get(task_id)
@@ -172,21 +187,29 @@ class TaskService:
         return task
 
     async def complete_step(self, task_id: str, step_id: str) -> dict[str, Any]:
-        task = await self.get(task_id)
-        steps = task.get("steps") or []
-        target = next((step for step in steps if str(step.get("id")) == step_id), None)
-        if target is None:
-            raise KeyError("step not found")
-        target["status"] = "completed"
-        target["result"] = target.get("result") or "Completed by user"
-        target["updated_at"] = now()
-        if steps and all(str(step.get("status")) in {"completed", "skipped"} for step in steps):
-            task["status"] = "completed"
-            task["completed_at"] = now()
-        task["revision"] = int(task.get("revision", 1)) + 1
-        task["updated_at"] = now()
-        await self._save(task)
-        return task
+        async with self.db.connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (await db.execute("SELECT data_json FROM tasks WHERE id=?", (task_id,))).fetchone()
+            if not row:
+                raise KeyError("task not found")
+            previous = loads(row["data_json"], {})
+            task = loads(row["data_json"], {})
+            steps = task.get("steps") or []
+            target = next((step for step in steps if str(step.get("id")) == step_id), None)
+            if target is None:
+                raise KeyError("step not found")
+            target["status"] = "completed"
+            target["result"] = target.get("result") or "Completed by user"
+            target["updated_at"] = now()
+            if steps and all(str(step.get("status")) in {"completed", "skipped"} for step in steps):
+                task["status"] = "completed"
+                task["completed_at"] = now()
+            task["revision"] = int(task.get("revision", 1)) + 1
+            task["updated_at"] = now()
+            await db.execute("UPDATE tasks SET data_json=?,updated_at=? WHERE id=?", (dumps(task),task["updated_at"],task["id"]))
+            await task_to_actions(db, task, previous)
+            await db.commit()
+            return task
 
     async def active_context(self, conversation_id: str | None) -> str:
         tasks = await self.list(limit=100)
@@ -280,6 +303,8 @@ class TaskService:
         item["description"] = description
         key = cls._step_key(title, description)
         for existing in target:
+            if (item.get("stage_id") or existing.get("stage_id")) and item.get("stage_id") != existing.get("stage_id"):
+                continue
             if cls._step_key(str(existing.get("title") or ""), str(existing.get("description") or "")) != key:
                 continue
             if len(description) > len(str(existing.get("description") or "")):

@@ -37,6 +37,8 @@ from .external_information import (
     structured_analysis,
 )
 from .file_processing import FileParseError, FileProcessingService
+from .information_source import validate_information_source
+from .linked_progress import resolve_notifications
 from .mcp import McpManager, McpToolError
 from .memory import MemoryService
 from .memory_protocol import FACT_KINDS, RelationUnavailable, bind_memory_evidence
@@ -458,10 +460,21 @@ class Application:
                 entity_id=suggestion["id"],
                 dedupe_key=f"suggestion:{suggestion['id']}",
                 group_key=f"proactive:{suggestion['risk']}",
+                entities=self._reminder_entities(suggestion.get("payload") or {}, suggestion["reason"]) if suggestion.get("event_type") == "schedule.connector_deadline" else None,
             )
             await self._publish_personal_notification(notification)
             await self.broadcast("proactive.suggestion.created", suggestion)
         return suggestions
+
+    @staticmethod
+    def _reminder_entities(payload: dict[str, Any], body: str) -> list[dict[str, Any]] | None:
+        action_id = payload.get("action_id") or (payload.get("action") or {}).get("id")
+        item_id = payload.get("item_id")
+        if action_id:
+            return [{"entity_type":"action", "entity_id":str(action_id), "body":body}]
+        if item_id and payload.get("provider") in {"email", "todo", "calendar", "notes"}:
+            return [{"entity_type":"connector_item", "entity_id":str(item_id), "body":body}]
+        return None
 
     async def _execute_proactive_action(self, job: dict[str, Any]) -> dict[str, Any]:
         action = job.get("action") or {}
@@ -474,16 +487,18 @@ class Application:
                 entity_id=job.get("suggestion_id"),
                 dedupe_key=f"job:{job['id']}",
                 group_key=f"proactive:{job.get('risk', 'low')}",
+                entities=self._reminder_entities(action.get("event") or {}, str(action.get("body") or "请查看个人工作台中的建议。")) if action.get("kind") in {"action_due", "deadline", "connector_deadline"} else None,
             )
             await self._publish_personal_notification(notification)
             return {"notification_id": notification["id"], "action": action_type}
         if action_type == "deadline_scan":
             profile = await self.profile_service.get()
             today = await self.personal_service.today(timezone=str(profile.get("timezone") or "Asia/Shanghai"))
-            due = [item for item in today.get("actions", []) if item.get("status") not in {"done", "cancelled"}]
+            due = [item for item in [*today.get("actions", []), *today.get("overdue_actions", [])] if item.get("status") not in {"done", "cancelled"}]
             if due:
                 notification = await self.personal_service.notify(
-                    "有临近截止的行动", f"有 {len(due)} 项行动需要关注。", kind="deadline", group_key="deadline"
+                    "有临近截止的行动", f"有 {len(due)} 项行动需要关注。", kind="deadline", group_key="deadline",
+                    entities=[{"entity_type":"action", "entity_id":item["id"], "body":f"本地行动：{item['title']}（截止：{item.get('due_at') or '未设置'}）"} for item in due],
                 )
                 await self._publish_personal_notification(notification)
             return {"action": action_type, "count": len(due)}
@@ -3821,6 +3836,8 @@ class Application:
         if not operation_id or not tool_name:
             return
         try:
+            async with self.db.connect() as db:
+                await validate_information_source(db, information_id, str(approval.get("source_fingerprint") or ""))
             await self.tool_call(
                 tool_name,
                 arguments,
@@ -3862,6 +3879,18 @@ class Application:
             if not row:
                 raise RpcFault(-32000, "Approval not found")
             approval = loads(row["data_json"], {})
+            if decision and approval.get("source") == "external_information":
+                try:
+                    await validate_information_source(db, str(approval["external_information_id"]), str(approval.get("source_fingerprint") or ""))
+                except RpcFault:
+                    approval.update(status="cancelled", resolved_at=now(), invalidation_reason="来源已删除或变化，请重新分析。")
+                    await db.execute("UPDATE approvals SET status='cancelled',data_json=? WHERE id=?", (dumps(approval),aid))
+                    operation_id = str((approval.get("arguments") or {}).get("external_operation_id") or "")
+                    await db.execute("UPDATE external_operations SET status='denied',error=?,updated_at=? WHERE idempotency_key=? AND status='awaiting_approval'",
+                                     (approval["invalidation_reason"],now(),operation_id))
+                    await db.commit()
+                    await self.broadcast("approval.resolved",redact(approval))
+                    raise
             linked_run = await (await db.execute("SELECT status FROM runs WHERE id=?", (approval.get("run_id"),))).fetchone()
             if linked_run and linked_run["status"] not in {"pending", "running"}:
                 cancelled = await cancel_pending(db, approval["run_id"])
@@ -5456,6 +5485,11 @@ class Application:
         fp = fingerprint(item)
         existing = await self.db.fetchone("SELECT * FROM external_information WHERE provider=? AND source_id=?", (provider, source_id))
         fallback = default_analysis(item)
+        if item.get("is_done") and provider == "todo":
+            async with self.db.connect() as db:
+                await db.execute("BEGIN IMMEDIATE")
+                await resolve_notifications(db, "connector_item", str(event.get("item_id") or item.get("id") or ""))
+                await db.commit()
         if existing:
             old_fp = str(existing["content_fingerprint"] or "")
             old_status = str(existing["status"] or "new")
@@ -5484,7 +5518,7 @@ class Application:
         analysis = fallback
         status = "analyzed"
         config = await self._role_model_config("summary")
-        if config is not None:
+        if config is not None and not (item.get("kind") == "todo" and item.get("is_done")):
             try:
                 reply = await ModelClient(self.settings, config).complete([{"role": "user", "content": analysis_prompt(item)}], [], [])
                 analysis = parse_analysis(reply.content, fallback)
@@ -5494,10 +5528,16 @@ class Application:
         if status != "analysis_failed":
             status = "needs_review" if analysis.get("relevance") in {"action", "attention", "needs_review"} else status
         stamp = now()
-        await self.db.execute(
-            "UPDATE external_information SET relevance=?,status=?,analysis_json=?,updated_at=?,analyzed_at=? WHERE id=?",
-            (str(analysis.get("relevance") or "needs_review"), status, dumps(analysis), stamp, stamp, information_id),
-        )
+        async with self.db.connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            changed = await db.execute(
+                "UPDATE external_information SET relevance=?,status=?,analysis_json=?,updated_at=?,analyzed_at=? WHERE id=? AND content_fingerprint=?",
+                (str(analysis.get("relevance") or "needs_review"), status, dumps(analysis), stamp, stamp, information_id, fingerprint(item)),
+            )
+            if not changed.rowcount:
+                latest = await (await db.execute("SELECT analysis_json FROM external_information WHERE id=?", (information_id,))).fetchone()
+                return loads(latest["analysis_json"], {}) if latest else {}
+            await db.commit()
         await self.broadcast("external_information.updated", {"id": information_id, "status": status, "analysis": analysis})
         return analysis
 
@@ -5568,7 +5608,13 @@ class Application:
         if not row:
             raise RpcFault(-32000, "External information not found")
         item = await self._external_item(row)
-        analysis = await self._analyze_external_information(information_id, item.get("original") or {})
+        original = item.get("original") or {}
+        source = await self.db.fetchone("SELECT status FROM connector_items WHERE id=?", (row["connector_item_id"],))
+        if not original or not source or source["status"] != "active":
+            raise RpcFault(-32001, "原始来源已不可用，无法重新分析。")
+        await self.db.execute("UPDATE external_information SET content_fingerprint=?,source_version=? WHERE id=?",
+                              (fingerprint(original), str(original.get("updated_at") or now()), information_id))
+        analysis = await self._analyze_external_information(information_id, original)
         return {"item": await self._external_item(await self.db.fetchone("SELECT * FROM external_information WHERE id=?", (information_id,))), "analysis": analysis}
 
     async def external_information_reanalyze(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -5630,7 +5676,11 @@ class Application:
         tool_name = self._external_information_tool(action)
         if not tool_name:
             return None
+        async with self.db.connect() as db:
+            item = await validate_information_source(db, information_id)
         arguments = self._external_information_arguments(action, item, analysis)
+        source_fingerprint = fingerprint(item)
+        arguments["_source_guard"] = {"information_id":information_id, "fingerprint":source_fingerprint}
         workflow_id = f"external-information:{information_id}"
         operation = await self.prepare_external_operation(
             None,
@@ -5658,6 +5708,7 @@ class Application:
             "ui_scope": "external_information",
             "source": "external_information",
             "external_information_id": information_id,
+            "source_fingerprint": source_fingerprint,
             "action": action,
             "status": "pending",
             "created_at": stamp,
@@ -5665,14 +5716,21 @@ class Application:
             "available_scopes": ["once"],
         }
         approval["preview"] = await self._external_preview(tool_name, arguments)
-        await self.db.execute("INSERT INTO approvals VALUES(?,?,?,?)", (approval_id, dumps(approval), "pending", stamp))
-        await self.db.update_external_operation(operation_id, status="awaiting_approval", approval_id=approval_id, updated_at=stamp)
+        async with self.db.connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await validate_information_source(db, information_id, source_fingerprint)
+            await db.execute("INSERT INTO approvals VALUES(?,?,?,?)", (approval_id, dumps(approval), "pending", stamp))
+            await db.execute("UPDATE external_operations SET approval_id=?,updated_at=? WHERE idempotency_key=? AND status='awaiting_approval'",
+                             (approval_id,stamp,operation_id))
+            await db.commit()
         await self.proactive.audit("approval.requested", entity_type="external_information", entity_id=information_id, details={"approval_id": approval_id, "tool_name": tool_name})
         await self.broadcast("approval.required", redact(approval))
         return approval
 
     async def external_information_accept(self, params: dict[str, Any]) -> dict[str, Any]:
         information_id = str(required(params, "information_id"))
+        async with self.db.connect() as db:
+            await validate_information_source(db, information_id)
         row = await self.db.fetchone("SELECT * FROM external_information WHERE id=?", (information_id,))
         if not row:
             raise RpcFault(-32000, "External information not found")
@@ -6570,6 +6628,7 @@ class Application:
         *,
         workflow_id: str | None = None,
     ) -> dict[str, Any]:
+        self._validate_connector_capability(tool_name, arguments)
         clean = {key: value for key, value in arguments.items() if key not in {"external_operation_id", "idempotency_key"}}
         request_payload = json.dumps({"tool_name": tool_name, "arguments": clean}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         request_hash = hashlib.sha256(request_payload.encode("utf-8")).hexdigest()
@@ -6596,6 +6655,15 @@ class Application:
         item = self._external_operation_dict(dict(row), redact_output=False)
         item["needs_approval"] = claimed
         return item
+
+    @staticmethod
+    def _validate_connector_capability(tool_name: str, arguments: dict[str, Any]) -> None:
+        if tool_name == "feishu_task_create" and arguments.get("labels"):
+            raise RpcFault(-32602, "当前飞书任务适配器不支持标签，尚未创建审批或任务；请确认是否去掉标签后继续。")
+        if tool_name == "connector_workflow":
+            for step in arguments.get("steps") or []:
+                if isinstance(step, dict):
+                    Application._validate_connector_capability(str(step.get("tool") or ""), step.get("arguments") or {})
 
     async def resolve_external_operation(self, operation_id: str, *, approved: bool) -> dict[str, Any]:
         operation = await self._operation_get(operation_id)
@@ -6657,7 +6725,7 @@ class Application:
             # the external-operations UI can show and resume every step.
             operation_workflow_id = str(operation.get("workflow_id") or workflow_id or operation_id)
             await self.db.start_external_operation(operation_id, updated_at=now(), run_id=run_id)
-            clean = {key: value for key, value in arguments.items() if key not in {"external_operation_id", "idempotency_key"}}
+            clean = {key: value for key, value in arguments.items() if key not in {"external_operation_id", "idempotency_key", "_source_guard"}}
             try:
                 if name == "feishu_task_create":
                     if clean.get("labels"):

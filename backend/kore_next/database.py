@@ -649,6 +649,11 @@ class Database:
             if row is None:
                 await db.rollback()
                 raise KeyError("external operation not found")
+            guard = (json.loads(row["arguments_json"] or "{}") or {}).get("_source_guard")
+            if guard:
+                from .information_source import validate_information_source
+
+                await validate_information_source(db, str(guard["information_id"]), str(guard["fingerprint"]))
             status = str(row["status"])
             if status == "awaiting_approval" or status == "approved":
                 await db.execute(

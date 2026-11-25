@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from .database import Database
+from .linked_progress import action_to_tasks, create_notice
 from .util import dumps, loads, now, uid
 
 DEFAULT_PROFILE: dict[str, Any] = {
@@ -235,18 +236,22 @@ class PersonalService:
         return item
 
     async def action_update(self, action_id: str, values: dict[str, Any]) -> dict[str, Any]:
-        item = await self._get("actions", action_id, "Action")
-        for key in ("title", "description", "status", "priority", "due_at", "goal_id", "project_id"):
-            if key in values:
-                item[key] = values[key]
-        item["updated_at"] = now()
-        if item.get("status") == "done":
-            item["completed_at"] = item["updated_at"]
-        await self.db.execute(
-            "UPDATE actions SET data_json=?,status=?,due_at=?,updated_at=? WHERE id=?",
-            (dumps(item), item["status"], item.get("due_at"), item["updated_at"], action_id),
-        )
-        return item
+        async with self.db.connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (await db.execute("SELECT data_json FROM actions WHERE id=?", (action_id,))).fetchone()
+            if not row:
+                raise KeyError("Action not found")
+            item = loads(row["data_json"], {})
+            for key in ("title", "description", "status", "priority", "due_at", "goal_id", "project_id"):
+                if key in values:
+                    item[key] = values[key]
+            item["updated_at"] = now()
+            item["completed_at"] = (item.get("completed_at") or item["updated_at"]) if item.get("status") == "done" else None
+            await db.execute("UPDATE actions SET data_json=?,status=?,due_at=?,updated_at=? WHERE id=?",
+                             (dumps(item), item["status"], item.get("due_at"), item["updated_at"], action_id))
+            await action_to_tasks(db, item)
+            await db.commit()
+            return item
 
     async def action_complete(self, action_id: str) -> dict[str, Any]:
         return await self.action_update(action_id, {"status": "done"})
@@ -266,64 +271,12 @@ class PersonalService:
         merge_window_seconds: int = 600,
         metadata: dict[str, Any] | None = None,
         priority: str = "normal",
+        entity_type: str | None = None,
+        entities: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        stamp = now()
-        if dedupe_key or group_key:
-            since = (datetime.now(UTC) - timedelta(seconds=max(1, int(merge_window_seconds)))).isoformat()
-            rows = await self.db.fetchall(
-                "SELECT id,data_json FROM notifications WHERE status='unread' AND created_at>? ORDER BY created_at DESC LIMIT 50",
-                (since,),
-            )
-            for row in rows:
-                existing = loads(row["data_json"], {})
-                same_dedupe = dedupe_key and existing.get("dedupe_key") == dedupe_key
-                same_group = group_key and existing.get("group_key") == group_key
-                if not (same_dedupe or same_group):
-                    continue
-                ids = list(existing.get("entity_ids") or [])
-                if entity_id and entity_id not in ids:
-                    ids.append(entity_id)
-                existing["title"] = title.strip()[:160]
-                if same_dedupe:
-                    existing["body"] = body.strip()
-                else:
-                    previous_body = str(existing.get("body") or "").strip()
-                    incoming_body = body.strip()
-                    merged_body = "\n\n".join(item for item in (previous_body, incoming_body) if item)
-                    existing["body"] = merged_body[-12_000:]
-                existing["count"] = int(existing.get("count", 1)) + 1
-                existing["entity_ids"] = ids
-                existing["entity_id"] = existing.get("entity_id") or entity_id
-                existing["updated_at"] = stamp
-                if metadata:
-                    merged_metadata = {**(existing.get("metadata") or {}), **metadata}
-                    old_changes = list((existing.get("metadata") or {}).get("changes") or [])
-                    new_changes = list(metadata.get("changes") or []) if isinstance(metadata, dict) else []
-                    if old_changes or new_changes:
-                        merged_metadata["changes"] = (old_changes + new_changes)[-40:]
-                    existing["metadata"] = merged_metadata
-                await self.db.execute("UPDATE notifications SET data_json=? WHERE id=?", (dumps(existing), row["id"]))
-                return existing
-        item = {
-            "id": uid(),
-            "title": title.strip()[:160],
-            "body": body.strip(),
-            "kind": kind,
-            "entity_id": entity_id,
-            "entity_ids": [entity_id] if entity_id else [],
-            "dedupe_key": dedupe_key,
-            "group_key": group_key,
-            "count": 1,
-            "metadata": metadata or {},
-            "priority": priority if priority in {"low", "normal", "high"} else "normal",
-            "status": "unread",
-            "created_at": stamp,
-            "updated_at": stamp,
-            "read_at": None,
-            "dismissed_at": None,
-        }
-        await self.db.execute("INSERT INTO notifications VALUES(?,?,?,?)", (item["id"], dumps(item), item["status"], stamp))
-        return item
+        return await create_notice(self.db, title, body, kind=kind, entity_id=entity_id, dedupe_key=dedupe_key,
+                                   group_key=group_key, merge_window_seconds=merge_window_seconds,
+                                   metadata=metadata, priority=priority, entity_type=entity_type, entities=entities)
 
     async def notification_update(self, notification_id: str, status: str) -> dict[str, Any]:
         item = await self._get("notifications", notification_id, "Notification")

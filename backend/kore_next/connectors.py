@@ -560,7 +560,7 @@ class ConnectorService:
                     **record,
                     "id": existing["id"],
                     "is_read": old.get("is_read", record.get("is_read", False)),
-                    "is_done": old.get("is_done", record.get("is_done", False)),
+                    "is_done": record.get("is_done", old.get("is_done", False)) if provider == "todo" else old.get("is_done", record.get("is_done", False)),
                     "sync_loaded_historic": bool(old.get("sync_loaded_historic")) or bool(record.get("sync_loaded_historic")),
                     "created_at": old.get("created_at", record["updated_at"]),
                 }
@@ -702,7 +702,9 @@ class ConnectorService:
         # Provider adapters may refresh a remote item's modified timestamp on
         # every poll.  Do not turn that into a local update/event unless the
         # meaningful payload changed.
-        ignored = {"id", "created_at", "updated_at", "is_read", "is_done"}
+        ignored = {"id", "created_at", "updated_at", "is_read"}
+        if new.get("provider") != "todo":
+            ignored.add("is_done")
         return {key: value for key, value in old.items() if key not in ignored} != {key: value for key, value in new.items() if key not in ignored}
 
     async def _real_feishu_records(self, provider: str, connection: dict[str, Any]) -> list[dict[str, Any]]:

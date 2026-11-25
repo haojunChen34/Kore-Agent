@@ -26,6 +26,7 @@ from .context import ContextDecision, ContextManager, context_window_info
 from .database import Database
 from .errors import RpcFault
 from .evidence import EvidenceStore
+from .execution_quality import completion_instruction, explicitly_read_only
 from .external_information import (
     analysis_prompt,
     default_analysis,
@@ -2156,6 +2157,8 @@ class Application:
                     semantic_changes.append({"kind": "added", "url": url, "title": current_item.get("title") or current_item.get("page_title") or url, "summary": self._monitor_source_summary(current_item), "importance": "high", "before_content": "", "after_content": self._monitor_content(current_item)})
                     continue
                 body_diff = semantic_diff_summary(previous_item.get("content_text") or previous_item.get("content_excerpt", ""), current_item.get("content_text") or current_item.get("content_excerpt", ""))
+                if current_item.get('extraction_scope') == 'page_text_fallback':
+                    body_diff['summary'] = str(body_diff.get('summary') or '').replace('正文', '页面可读文本（未可靠定位正文）')
                 if body_diff.get("changed"):
                     semantic_changes.append({"kind": "updated", "url": url, "title": current_item.get("title") or current_item.get("page_title") or url, "summary": body_diff.get("summary"), "similarity": body_diff.get("similarity"), "importance": "high" if float(body_diff.get("similarity", 1)) < 0.65 else "normal", "before_content": self._monitor_content(previous_item), "after_content": self._monitor_content(current_item)})
             for url in sorted(set(previous_sources) - set(current_sources)):
@@ -2592,6 +2595,8 @@ class Application:
                     f"(source={window_info['source']}). "
                     "Use this local estimate for model-configuration questions; do not browse the web unless the user asks for external or current information."
                 )
+                user_zone = ZoneInfo(str((await self.profile_service.get()).get('timezone') or 'Asia/Shanghai') )
+                base_system += f'\nCurrent local date/time: {datetime.now(user_zone).isoformat()}; timezone={user_zone.key}. Reuse dates and constraints already confirmed in the conversation; clarify only genuine ambiguity.'
                 if run.get("source") == "plan" and plan_task_id:
                     try:
                         accepted_task = await self.task_service.get(str(plan_task_id))
@@ -2662,11 +2667,13 @@ class Application:
                 self.remember,
                 self.mcp_manager,
                 self,
+                read_only=bool((recovery_state or {}).get('read_only', explicitly_read_only(run['user_message']))),
             )
             if recovery_state:
                 tools.activated_tools.update(recovery_state.get("activated_tools", []))
             final = ""
             research_packets: list[dict[str, Any]] = []
+            delivery_review_done = bool((recovery_state or {}).get('delivery_review_done', False))
             steps = start_step - 1
             repeated_calls = RepeatedToolCallGuard()
 
@@ -2996,6 +3003,26 @@ class Application:
                     }
                 )
                 if not reply.tool_calls:
+                    # Review only tool-backed work, once, within the existing budget.
+                    # This checks evidence availability; it does not prove semantic correctness.
+                    review_tools = {m.get('name') for m in model_messages if m.get('role') == 'tool'} - {'memory_search', 'memory_read', 'memory_list', 'get_current_time'}
+                    if review_tools and run['mode'] != 'plan' and not delivery_review_done and not force_final and not final_tool_round and not after_call_budget.exceeded and steps < effective_step_limit:
+                        task_state = None
+                        if plan_task_id:
+                            try:
+                                task_state = await self.task_service.get(str(plan_task_id))
+                            except KeyError:
+                                pass
+                        model_messages.append({'role': 'system', 'content': completion_instruction(model_messages, task_state)})
+                        delivery_review_done = True
+                        await self._event(run, 'delivery_review', step=steps, task_id=plan_task_id)
+                        controller.finish_round()
+                        await self.checkpoints.save(run_id=run['id'], conversation_id=run['conversation_id'], sequence=steps,
+                            state={'model_messages': model_messages, 'usage': total, 'next_step': steps + 1,
+                                   'plan_task_id': plan_task_id, 'activated_tools': sorted(tools.activated_tools), 'model_calls': model_calls,
+                                   'budget_state': controller.snapshot(), 'delivery_review_done': True, 'read_only': tools.read_only,
+                                   'memory_verification_done': memory_verification_done, 'memory_check_context': memory_check_context})
+                        continue
                     # Memory-only verification is bounded, uses real read tools and
                     # cannot exceed the existing model/step budget or privacy toggle.
                     if (not memory_verification_done and not force_final and not final_tool_round and not after_call_budget.exceeded
@@ -3024,7 +3051,8 @@ class Application:
                             state={"model_messages": model_messages, "usage": total, "next_step": steps + 1,
                                    "plan_task_id": plan_task_id, "activated_tools": sorted(tools.activated_tools),
                                    "model_calls": model_calls, "budget_state": controller.snapshot(),
-                                   "memory_verification_done": memory_verification_done, "memory_check_context": memory_check_context})
+                                   "memory_verification_done": memory_verification_done, "memory_check_context": memory_check_context,
+                                   "delivery_review_done": delivery_review_done, "read_only": tools.read_only})
                         continue
                     final = reply.content or ""
                     break
@@ -3126,6 +3154,8 @@ class Application:
                         "budget_state": controller.snapshot(),
                         "memory_verification_done": memory_verification_done,
                         "memory_check_context": memory_check_context,
+                        "delivery_review_done": delivery_review_done,
+                        "read_only": tools.read_only,
                     },
                 )
             run.update(status="completed", updated_at=now(), completed_at=now(), stop_reason="completed")
@@ -3136,11 +3166,10 @@ class Application:
             if plan_task_id and (run["mode"] != "plan" or run.get("source") == "plan"):
                 try:
                     task = await self.task_service.get(str(plan_task_id))
-                    if not task.get("long_term"):
-                        completed_steps = [{"id": step["id"], "status": "completed", "result": final[:1_000]} for step in task.get("steps", [])]
+                    if not task.get("long_term") and task.get('steps') and all(step.get('status') == 'completed' for step in task['steps']):
                         await self.task_service.update(
                             str(plan_task_id),
-                            {"status": "completed", "steps": completed_steps},
+                            {"status": "completed"},
                             run_id=run["id"],
                         )
                 except (KeyError, ValueError):
@@ -3286,7 +3315,8 @@ class Application:
         common = (
             "You are KoreAgent Next, a reliable local AI agent. Work toward the user's actual result, use tools when useful, "
             "keep durable task state current, publish deliverables, and never claim an action succeeded without evidence. "
-            "Use tool_catalog to discover and activate optional capabilities before calling them. "
+            "Use tool_catalog to discover and activate optional capabilities before calling them. A failed language query is not proof a capability is unavailable: inspect query='' or MCP and page the catalog. Choose qualified server/tool names by descriptions and exact schemas, preserving opaque pagination cursors. "
+            "An empty search is not proof the source is absent. For known local files list_files then read_file/file_extract; for inbox items use connector_inbox then connector_related. Use at most two query adjustments, then report limits. Never read unrelated attachments. "
             "For relative dates such as next week, use get_current_time and resolve an exact timezone-aware ISO time. "
             "External connector writes (Feishu tasks, Feishu documents, Feishu calendar events, and email) require user approval; "
             "do not claim they succeeded until the connector returns a result. "
@@ -3298,12 +3328,13 @@ class Application:
             "For recurring website monitoring, use research_monitor_create, parse Chinese schedules, and require explicit confirmation. "
             "When the user describes an ongoing or long-term personal objective, first create a goal with goal_create. "
             "Then create any multi-stage plan with task_create using that goal_id and long_term=true, and create recurring reminders "
-            "with automation_create using the same goal_id. Do not describe a task as a long-term goal unless the goal record was created. "
+            "with automation_create using the same goal_id ONLY when the user requests reminders. Create each requested stage action using the goal_id and plan_id/stage_id when available. Do not describe a task as a long-term goal unless the goal record was created. "
             "Long-term goals remain active until the user explicitly completes, pauses, or archives them."
             " For a local workbench action use action_create, never substitute task_create. Pass the actual source_type/source_id and deadline. "
             "Use research_monitor_updates to read monitored changes; do not guess that the monitor has no updates. "
             "When delivering a generated report or requested output file, call artifact_publish after write_file so the user can find the deliverable. "
-            "Before creating calendar events, ask for a missing date; do not silently assume today. "
+            "Before creating calendar events, ask only for genuinely missing or ambiguous dates after consulting the current clock and prior confirmed messages; do not silently assume today. "
+            "Preserve approval conditions: proposed, pending-confirmation and executed are different states. For spreadsheets use file_extract; missing formula caches are unknown, and any arithmetic you perform must be labeled as your calculation. Do not include credentials from source material in answers, drafts, files or attachments. "
             "If a file cannot be read, explain how to supply or repair it; do not write repair scripts unless the user requests repair. "
             " Follow the user's requested output format literally: if the user asks for an exact number of sentences, items, "
             "or sections, count them before sending the answer and revise until the count is exact. Do not add an extra "
@@ -4415,8 +4446,10 @@ class Application:
                     "summary": original.get("summary") or analysis.get("summary") or analysis.get("reason") or "",
                     "importance": analysis.get("importance", "normal"),
                     "confidence": analysis.get("confidence"),
+                    "status": item.get('status'),
+                    "execution_state": 'suggestion_only_requires_confirmation',
                     "suggested_actions": [
-                        self._brief_item(action, ("title", "action_type", "action_target", "priority"))
+                        self._brief_item(action, ("title", "description", "action_type", "action_target", "priority", "condition", "requires_confirmation"))
                         for action in actions[:4] if isinstance(action, dict)
                     ],
                     "created_at": item.get("created_at"),
@@ -4490,6 +4523,7 @@ class Application:
         prompt = (
             "请根据下面提供的结构化信息生成一份简洁的今日摘要。"
             "摘要需要帮助用户快速了解今天最重要的事情，只使用输入中已有的信息，不要编造事实。"
+            "待确认建议不等于已安排或已承诺；保留描述中的前置条件和否定，不得将建议改写成确定待办。"
             "请严格返回 JSON，不要添加 Markdown 代码块或其他说明。"
             "JSON 字段必须包含 title、content、priorities、risks、next_step。"
             "其中 title 和 content 是字符串，priorities 和 risks 是字符串数组，next_step 是字符串；"
@@ -5782,7 +5816,11 @@ class Application:
                 continue
             action_type = str(action.get("action_type") or "create_action")
             if action_type in {"create_action", "review", "link_goal"}:
-                created.append(await self.personal_service.action_create(str(action["title"]), str(action.get("description") or ""), due_at=action.get("due_at"), goal_id=params.get("goal_id"), priority=str(action.get("priority") or "normal"), source="external_information"))
+                local_action = await self.personal_service.action_create(str(action["title"]), str(action.get("description") or ""), due_at=action.get("due_at"), goal_id=params.get("goal_id"), priority=str(action.get("priority") or "normal"), source="external_information")
+                created.append(local_action)
+                stamp = now()
+                await self.db.execute("INSERT INTO context_links(id,source_type,source_id,target_type,target_id,relation,score,data_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (uid(), 'connector_item', row['connector_item_id'], 'action', local_action['id'], 'derived_action', 1.0, dumps({'external_information_id': information_id}), stamp, stamp))
             elif action_type == "external_operation":
                 approval = await self._create_external_information_approval(information_id, action, source.get("original") or {}, analysis, len(approvals))
                 if approval:
@@ -7025,6 +7063,8 @@ class Application:
             return await self.file_extract(arguments)
         if name == "connector_related":
             return await self.connector_related(arguments)
+        if name == 'connector_inbox':
+            return await self.connector_inbox({**arguments, 'limit': max(1, min(int(arguments.get('limit') or 20), 50))})
         if name == "history_read":
             offset = max(0, int(arguments.get("offset", 0)))
             limit = max(1, min(int(arguments.get("limit", 50)), 200))
@@ -7165,6 +7205,7 @@ class Application:
                 status="pending" if mode == "plan" else "active",
                 goal_id=str(arguments.get("goal_id") or "") or None,
                 long_term=bool(arguments.get("long_term", False)),
+                plan_id=str(arguments.get('plan_id') or '') or None,
             )
             return {"task": task}
         if name == "task_update":

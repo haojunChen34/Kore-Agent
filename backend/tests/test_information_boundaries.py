@@ -26,7 +26,8 @@ class InformationBoundariesTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reanalysis_does_not_execute_or_duplicate_accepted_action(self):
         _, info = await self.source()
-        await self.app.external_information_accept({'information_id': info['id'], 'actions': [{'action_type': 'create_action', 'title': 'Follow up', 'action_target': 'local_action'}]})
+        accepted = await self.app.external_information_accept({'information_id': info['id'], 'actions': [{'action_type': 'create_action', 'title': 'Follow up', 'action_target': 'local_action'}]})
+        self.assertTrue((await self.app.action_get({'action_id': accepted['actions'][0]['id']}))['sources'][0]['found'])
         before = [dict(r) for r in await self.app.db.fetchall('SELECT * FROM actions')]
         await self.app.external_information_reanalyze({'information_id': info['id']})
         if self.app.background_tasks:

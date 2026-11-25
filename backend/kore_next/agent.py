@@ -22,6 +22,7 @@ from .config import Settings
 from .mcp import McpManager, McpToolError
 from .research import WebResearchService, isolate_web_content, source_trust
 from .sandbox import SandboxSupervisor
+from .security import TOKEN
 
 EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 ApprovalGate = Callable[[str, str, dict[str, Any], str], Awaitable[bool]]
@@ -69,10 +70,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a UTF-8 text file inside the workspace.",
+            "description": "Read a UTF-8 workspace file. Large files return a bounded chunk and next_offset; continue from that offset to inspect the rest without shell or writing files.",
             "parameters": {
                 "type": "object",
-                "properties": {"path": {"type": "string"}},
+                "properties": {"path": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}, "max_chars": {"type": "integer", "minimum": 1, "maximum": 16000}},
                 "required": ["path"],
             },
         },
@@ -259,6 +260,10 @@ TOOLS.extend(
             {"item_id": {"type": "string"}, "limit": {"type": "integer"}},
             ["item_id"],
         ),
+        _definition('connector_inbox', 'List synced inbox records when a semantic query has no result. Read-only; use bounded limits. Does not read attachments, mark completed or send anything.', {
+            'provider': {'type': 'string', 'enum': ['email', 'calendar', 'todo', 'notes']}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 50},
+            'completed_only': {'type': 'boolean'}
+        }),
         _definition("memory_list", "List eligible memory summaries with usage labels. Reading does not approve or resolve a fact.", {"status": {"type": "string"}, "sensitive": {"type": "boolean"}, "limit": {"type": "integer"}, "purpose": MEMORY_PURPOSE}),
         _definition(
             "memory_search",
@@ -340,6 +345,7 @@ TOOLS.extend(
         _definition("goal_list", "List personal goals.", {"status": {"type": "string"}, "limit": {"type": "integer"}}),
         _definition("action_create", "Create a local workbench action (今日行动/后续行动), not a tracked task plan. Preserve the source ID and timezone-aware deadline.", {
             "title": {"type": "string"}, "description": {"type": "string"}, "due_at": {"type": "string"},
+            "plan_id": {"type": "string"}, "stage_id": {"type": "string"},
             "goal_id": {"type": "string"}, "source_type": {"type": "string", "enum": ["connector_item", "research_monitor_update", "conversation"]},
             "source_id": {"type": "string"}, "priority": {"type": "string"}}, ["title"]),
         _definition("action_list", "List local workbench actions.", {"status": {"type": "string"}, "limit": {"type": "integer"}}),
@@ -360,6 +366,7 @@ TOOLS.extend(
                 "goal": {"type": "string"},
                 "description": {"type": "string"},
                 "steps": {"type": "array", "items": {"type": "object"}},
+                "plan_id": {"type": "string"},
                 "goal_id": {"type": "string"},
                 "long_term": {"type": "boolean"},
             },
@@ -567,6 +574,10 @@ PLAN_ALLOWED_TOOLS = {
     "tool_catalog",
 }
 
+READ_ONLY_TOOLS = (PLAN_ALLOWED_TOOLS - {"task_create", "task_update", "research_monitor_create"}) | {
+    "action_list", "goal_list", "automation_list", "research_monitor_updates", "http_request", "connector_inbox",
+}
+
 CORE_TOOLS = {
     "read_file",
     "list_files",
@@ -609,9 +620,8 @@ CORE_TOOLS = {
 
 TOOL_CATALOG_DEFINITION = _definition(
     "tool_catalog",
-    "Find and activate additional tools for this run by capability or name.",
-    {"query": {"type": "string", "description": "Capability to find, for example memory, session search, HTTP, evidence, automation, MCP."}},
-    ["query"],
+    "Find and activate tools by capability, qualified name or server. Returns descriptions, schemas and pagination. Use query='' or MCP if a semantic query has no match. Discovery does not grant permission.",
+    {"query": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}},
 )
 TOOLS.append(TOOL_CATALOG_DEFINITION)
 
@@ -1318,6 +1328,7 @@ class ToolExecutor:
         remember: Callable[..., Awaitable[Any]],
         mcp: McpManager,
         services: Any | None = None,
+        *, read_only: bool = False,
     ):
         self.settings = settings
         self.approve = approve
@@ -1327,6 +1338,14 @@ class ToolExecutor:
         self.services = services
         self.sandbox = SandboxSupervisor(settings.workspace_dir)
         self.activated_tools: set[str] = set()
+        self.read_only = read_only
+
+    def permits(self, name: str) -> bool:
+        if not self.read_only:
+            return True
+        if name.startswith("mcp__"):
+            return self.mcp.is_read_only(name)
+        return name in READ_ONLY_TOOLS
 
     def tool_definitions(self, mode: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         available = builtin_tool_definitions(mode)
@@ -1334,9 +1353,9 @@ class ToolExecutor:
         extra = []
         if mode != "plan":
             extra = [definition for definition in self.mcp.tool_definitions() if definition["function"]["name"] in self.activated_tools]
-        return base, extra
+        return [d for d in base if self.permits(d['function']['name'])], [d for d in extra if self.permits(d['function']['name'])]
 
-    def activate_tools(self, query: str, mode: str) -> dict[str, Any]:
+    def activate_tools(self, query: str, mode: str, offset: int = 0) -> dict[str, Any]:
         options = builtin_tool_definitions(mode)
         if mode != "plan":
             options = [*options, *self.mcp.tool_definitions()]
@@ -1345,13 +1364,18 @@ class ToolExecutor:
         for definition in options:
             name = definition["function"]["name"]
             searchable = f"{name} {definition['function'].get('description', '')}".lower()
-            if name != "tool_catalog" and (not terms or any(term in searchable for term in terms)):
+            if name != "tool_catalog" and self.permits(name) and (not terms or any(term in searchable for term in terms)):
                 matches.append(definition)
-        chosen = matches[:8]
+        matches.sort(key=lambda d: (d['function']['name'].lower() == query.strip().lower(), sum(t in (d['function']['name']+' '+d['function'].get('description','')).lower() for t in terms)), reverse=True)
+        offset = max(0, offset)
+        chosen = matches[offset:offset + 8]
         self.activated_tools.update(definition["function"]["name"] for definition in chosen)
         return {
             "activated": [definition["function"]["name"] for definition in chosen],
             "matching_count": len(matches),
+            "tools": [definition['function'] for definition in chosen],
+            "next_offset": offset + len(chosen) if offset + len(chosen) < len(matches) else None,
+            "available_servers": [{"name": name, "description": server.config.get('description', ''), "tool_count": len(server.tools)} for name, server in self.mcp.servers.items() if not server.error and server.config.get('enabled', True)],
             "message": "Activated tools are available on the next model step.",
         }
 
@@ -1367,10 +1391,14 @@ class ToolExecutor:
         *,
         mode: str = "normal",
     ) -> str:
+        if not self.permits(name):
+            raise PermissionError(f"Tool {name} is not available in this read-only run")
+        if self.read_only and name == 'http_request' and str(arguments.get('method') or 'GET').upper() not in {'GET', 'HEAD'}:
+            raise PermissionError('Only GET/HEAD are available in this read-only run')
         if mode == "plan" and name not in PLAN_ALLOWED_TOOLS:
             raise PermissionError(f"Tool {name} is not available in plan mode")
         if name == "tool_catalog":
-            return json.dumps(self.activate_tools(str(arguments.get("query") or ""), mode), ensure_ascii=False)
+            return json.dumps(self.activate_tools(str(arguments.get("query") or ""), mode, int(arguments.get('offset') or 0)), ensure_ascii=False)
         if name.startswith("mcp__"):
             server = self.mcp.servers.get(name.split("__", 2)[1])
             if server and not server.config.get("enabled", True):
@@ -1399,7 +1427,13 @@ class ToolExecutor:
             path = self.sandbox.resolve(str(arguments.get("path", "")), must_exist=True)
             if not path.is_file():
                 raise IsADirectoryError(path)
-            return path.read_text(encoding="utf-8")
+            text = TOKEN.sub('[REDACTED_TOKEN]', path.read_text(encoding="utf-8"))
+            offset = max(0, int(arguments.get('offset') or 0))
+            limit = max(1, min(int(arguments.get('max_chars') or 12000), 16000))
+            if offset == 0 and len(text) <= limit:
+                return text
+            end = min(len(text), offset + limit)
+            return json.dumps({'text': text[offset:end], 'offset': offset, 'characters': len(text), 'truncated': end < len(text), 'next_offset': end if end < len(text) else None}, ensure_ascii=False)
         if name == "list_files":
             path = self.sandbox.resolve(str(arguments.get("path", ".")), must_exist=True)
             if not path.is_dir():
@@ -1529,6 +1563,7 @@ class ToolExecutor:
             "unified_search",
             "file_extract",
             "connector_related",
+            "connector_inbox",
             "research_monitor_create",
             "memory_list",
             "memory_search",

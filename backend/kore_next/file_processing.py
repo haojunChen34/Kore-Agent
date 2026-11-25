@@ -175,15 +175,24 @@ class FileProcessingService:
             raise RuntimeError("Excel extraction requires the openpyxl package") from exc
         try:
             book = load_workbook(str(path), read_only=True, data_only=True)
+            formulas = load_workbook(str(path), read_only=True, data_only=False)
             lines: list[str] = []
             metadata["sheets"] = list(book.sheetnames)
             for sheet in book.worksheets:
                 lines.append(f"[{sheet.title}]")
-                for row in sheet.iter_rows(values_only=True):
-                    values = ["" if value is None else str(value) for value in row]
+                for row, formula_row in zip(sheet.iter_rows(), formulas[sheet.title].iter_rows(), strict=True):
+                    values = []
+                    for cell, formula in zip(row, formula_row, strict=True):
+                        if formula.data_type == 'f':
+                            cached = 'missing (not evaluated)' if cell.value is None else str(cell.value)
+                            values.append(f'{formula.coordinate}: formula={formula.value}; cached_value={cached}')
+                        else:
+                            values.append('' if cell.value is None else f'{cell.coordinate}: {cell.value}')
                     if any(values):
                         lines.append(" | ".join(values))
             book.close()
+            formulas.close()
+            metadata['formulas_evaluated'] = False
         except Exception as exc:
             raise FileParseError(f"file_parse_error: unable to parse spreadsheet {path.name}") from exc
         return self._result(metadata, "\n".join(lines), max_chars)

@@ -207,12 +207,18 @@ class McpManager:
                         "type": "function",
                         "function": {
                             "name": f"mcp__{server_name}__{tool['name']}",
-                            "description": tool.get("description", f"MCP tool {tool['name']}"),
+                            "description": f"MCP server {server_name}: {server.config.get('description', '')}. " + tool.get("description", f"MCP tool {tool['name']}") + " Follow input schema; preserve any opaque result cursor exactly, continue only while a next cursor exists.",
                             "parameters": tool.get("inputSchema", {"type": "object"}),
                         },
                     }
                 )
         return result
+
+    def is_read_only(self, compound_name: str) -> bool:
+        _, server_name, tool_name = compound_name.split('__', 2)
+        server = self.servers.get(server_name)
+        return bool(server and not server.error and server.config.get('enabled', True) and any(
+            t.get('name') == tool_name and (t.get('annotations') or {}).get('readOnlyHint') is True for t in server.tools))
 
     async def call(self, compound_name: str, arguments: dict[str, Any]) -> str:
         try:
@@ -232,6 +238,16 @@ class McpManager:
             raise RuntimeError(f"MCP server {server_name!r} is disabled")
         if not server or server.error:
             raise RuntimeError(f"MCP server {server_name!r} is unavailable")
+        tool = next((t for t in server.tools if t.get('name') == tool_name), None)
+        if tool is None:
+            raise ValueError('MCP tool is not registered')
+        from jsonschema import Draft202012Validator
+        # Preserve the server's schema including enum, required and additionalProperties.
+        schema = tool.get('inputSchema') or {'type': 'object'}
+        errors = list(Draft202012Validator(schema).iter_errors(arguments))
+        if errors:
+            error = errors[0]
+            raise ValueError(f"MCP argument schema error at {list(error.path)}: {error.message}")
         try:
             result = await server.request("tools/call", {"name": tool_name, "arguments": arguments})
         except Exception as first_error:

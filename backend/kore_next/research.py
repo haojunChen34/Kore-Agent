@@ -102,7 +102,13 @@ def build_research_report(answer: str, packets: list[dict[str, Any]]) -> dict[st
         text = re.sub(r"\[\s*S\d+\s*\]", "", line, flags=re.IGNORECASE).strip()
         if len(text) < 4 or text.startswith(("研究来源", "参考来源", "Sources:")):
             continue
-        claims.append({"text": text[:1_000], "source_ids": line_ids, "supported": bool(line_ids and all(item in valid_ids for item in line_ids))})
+        references_valid = bool(line_ids and all(item in valid_ids for item in line_ids))
+        excerpts = [{'source_id': sid, 'excerpt': str(source_map[sid].get('content_text') or source_map[sid].get('content_excerpt') or source_map[sid].get('snippet') or '')[:6000]} for sid in line_ids if sid in source_map]
+        # A valid citation ID alone says nothing about whether the source entails
+        # the claim. Exact text can be checked; paraphrases remain unverified.
+        verbatim = references_valid and any(text in e['excerpt'] for e in excerpts)
+        claims.append({'text': text[:1000], 'source_ids': line_ids, 'citation_resolved': references_valid,
+                       'supported': verbatim, 'support_status': 'verbatim_match' if verbatim else 'unverified', 'evidence': excerpts})
     uncertainties = [
         claim["text"]
         for claim in claims
@@ -126,6 +132,7 @@ def build_research_report(answer: str, packets: list[dict[str, Any]]) -> dict[st
             "回答中存在未绑定来源的陈述。" if coverage < 1 and claims else "",
             "回答引用了不存在的来源编号。" if invalid else "",
             "研究结果仅反映抓取时可公开访问的页面。",
+            "来源编号校验不等于语义支持验证；未逐字匹配的结论需结合证据复核。" if any(not c['supported'] for c in claims) else '',
         ],
     }
 
@@ -137,6 +144,8 @@ class _ArticleParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.title_parts: list[str] = []
         self.text_parts: list[str] = []
+        self.main_parts: list[str] = []
+        self._stack: list[tuple[str, bool, bool]] = []
         self.meta: dict[str, str] = {}
         self._title_depth = 0
         self._ignored_depth = 0
@@ -146,8 +155,10 @@ class _ArticleParser(HTMLParser):
         values = {str(key).lower(): str(value or "") for key, value in attrs}
         if tag == "title":
             self._title_depth += 1
-        if tag in {"script", "style", "noscript", "svg", "template"}:
-            self._ignored_depth += 1
+        ignored = tag in {'script', 'style', 'noscript', 'svg', 'template', 'nav', 'footer', 'aside'} or values.get('role') in {'navigation', 'contentinfo', 'banner'} or 'hidden' in values or values.get('aria-hidden') == 'true'
+        main = tag in {'main', 'article'} or values.get('role') == 'main'
+        if tag not in {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'}:
+            self._stack.append((tag, ignored, main))
         if tag == "meta":
             key = values.get("name") or values.get("property") or values.get("itemprop")
             content = values.get("content")
@@ -158,11 +169,17 @@ class _ArticleParser(HTMLParser):
         tag = tag.lower()
         if tag == "title" and self._title_depth:
             self._title_depth -= 1
-        if tag in {"script", "style", "noscript", "svg", "template"} and self._ignored_depth:
-            self._ignored_depth -= 1
+        for index in range(len(self._stack) - 1, -1, -1):
+            if self._stack[index][0] == tag:
+                del self._stack[index:]
+                break
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
 
     def handle_data(self, data: str) -> None:
-        if self._ignored_depth:
+        if any(item[1] for item in self._stack):
             return
         value = re.sub(r"\s+", " ", data).strip()
         if not value:
@@ -171,6 +188,8 @@ class _ArticleParser(HTMLParser):
             self.title_parts.append(value)
         else:
             self.text_parts.append(value)
+            if any(item[2] for item in self._stack):
+                self.main_parts.append(value)
 
 
 def _clean_text(value: str) -> str:
@@ -186,7 +205,7 @@ def extract_article(document: str, *, content_type: str = "") -> dict[str, Any]:
         try:
             parser.feed(document)
             title = _clean_text(" ".join(parser.title_parts))
-            text = _clean_text(" ".join(parser.text_parts))
+            text = _clean_text(" ".join(parser.main_parts or parser.text_parts))
         except Exception:
             title, text = "", _clean_text(re.sub(r"<[^>]+>", " ", document))
     else:
@@ -205,6 +224,7 @@ def extract_article(document: str, *, content_type: str = "") -> dict[str, Any]:
         "published_at": published_at[:100],
         "text": text,
         "word_count": len(text),
+        "extraction_scope": 'main_content' if parser.main_parts else ('page_text_fallback' if is_html else 'plain_text'),
     }
 
 
@@ -488,6 +508,7 @@ class WebResearchService:
                 "status": response.get("status"),
                 "final_url": response.get("url") or item["url"],
                 "content_type": response.get("content_type") or "",
+                "extraction_scope": parsed['extraction_scope'],
                 "page_title": parsed["title"],
                 "description": parsed["description"],
                 "published_at": parsed["published_at"],

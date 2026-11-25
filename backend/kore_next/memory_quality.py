@@ -1,13 +1,13 @@
 """Bounded evidence helpers for long-term memory, independent of benchmark labels."""
 from __future__ import annotations
 
-import copy
-import re
 import asyncio
+import copy
 import json
+import re
 
-from .util import dumps, now
 from .memory_matching import normalized, query_terms
+from .util import dumps, now
 
 MAX_EXTRACTION_ITEMS = 32
 
@@ -262,7 +262,7 @@ class MemoryQuality:
         One batch shares one extraction correction and at most one following
         adjudication. Neither request recursively starts another recovery cycle.
         """
-        from .memory_protocol import fact_fields, bind_memory_evidence, evidence_records, unique_records
+        from .memory_protocol import bind_memory_evidence, evidence_records, fact_fields, unique_records
         context = await self.db.get_json(memory.get("extraction_context_key", ""), None)
         if not context:
             return None

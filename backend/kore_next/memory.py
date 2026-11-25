@@ -1,23 +1,48 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
 import re
-import asyncio
-from weakref import WeakValueDictionary
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
+from weakref import WeakValueDictionary
 
 from .database import Database
 from .memory_matching import lexical_match, normalized, query_terms
-from .memory_quality import (MemoryQuality, EXTRACTION_RULES, MAX_EXTRACTION_ITEMS, extraction_issues, subject_evidence_conflict, bind_fact_details,
-                             detail_sources, source_search_text, fact_search_text, render_memory_index,
-                             canonical_subject, rank_current_candidates)
-from .memory_protocol import (FactProtocol, MemoryDatabase, READ_GUIDANCE, atomic_memory, bind_memory_evidence, fact_fields,
-                              operation_id, usage_state, unique_records, is_rejected, decision_revision,
-                              normalize_memory_evidence, partial_replacement, INDEPENDENT_RELATIONS, evidence_records)
+from .memory_protocol import (
+    INDEPENDENT_RELATIONS,
+    READ_GUIDANCE,
+    FactProtocol,
+    MemoryDatabase,
+    atomic_memory,
+    bind_memory_evidence,
+    decision_revision,
+    evidence_records,
+    fact_fields,
+    is_rejected,
+    normalize_memory_evidence,
+    operation_id,
+    partial_replacement,
+    unique_records,
+    usage_state,
+)
+from .memory_quality import (
+    EXTRACTION_RULES,
+    MAX_EXTRACTION_ITEMS,
+    MemoryQuality,
+    bind_fact_details,
+    canonical_subject,
+    detail_sources,
+    extraction_issues,
+    fact_search_text,
+    rank_current_candidates,
+    render_memory_index,
+    source_search_text,
+    subject_evidence_conflict,
+)
 from .util import dumps, loads, now, uid
 
 ReflectionModel = Callable[[str], Awaitable[str]]

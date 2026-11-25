@@ -17,7 +17,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .memory_matching import normalized, query_terms, similarity
-from .memory_quality import bind_fact_details, merge_fact_body, conditional_language
+from .memory_quality import bind_fact_details, conditional_language, merge_fact_body
 from .util import dumps, loads, now, uid
 
 RELATION_PROMPT = "Adjudicate long-term memory facts."
@@ -103,7 +103,7 @@ def partial_replacement(old, decision):
         if suffix and suffix[0] not in separators and part.rstrip(" \t")[-1] not in separators:
             return None
     spans.sort()
-    if any(left[1] > right[0] for left, right in zip(spans, spans[1:])):
+    if any(left[1] > right[0] for left, right in zip(spans, spans[1:], strict=False)):
         return None
     # A comma is an edit coordinate, not proof of grammatical independence.
     # Removing a condition or just its consequent would change what was asserted.

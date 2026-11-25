@@ -3,10 +3,11 @@ import unittest
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
+import test_workbench_consistency as fixtures
+
 from kore_next.external_information import analysis_prompt
 from kore_next.server import trusted_local_origin
 from kore_next.util import dumps
-import test_workbench_consistency as fixtures
 
 
 class InformationBoundariesTests(unittest.IsolatedAsyncioTestCase):
@@ -14,6 +15,23 @@ class InformationBoundariesTests(unittest.IsolatedAsyncioTestCase):
     asyncTearDown = fixtures.WorkbenchConsistencyTests.asyncTearDown
     source = fixtures.WorkbenchConsistencyTests.source
     change_source = fixtures.WorkbenchConsistencyTests.change_source
+
+    async def test_cross_provider_counts_keep_mailbox_window_and_handled_filter(self):
+        _, info = await self.source()
+        await self.app.db.execute('UPDATE connector_connections SET data_json=?',
+                                  (dumps({'provider': 'email', 'sync_days': 30}),))
+        await self.app.db.execute('UPDATE external_information SET status=?,analysis_json=? WHERE id=?',
+                                  ('needs_review', dumps({'category': 'action_required', 'importance': 'high',
+                                    'needs_reply': True, 'suggested_actions': [{'title': 'Reply', 'action_type': 'create_action'}]}), info['id']))
+        for provider in ('email', 'calendar', 'todo', 'notes', 'feishu', None):
+            with self.subTest(provider=provider):
+                result = await self.app.external_information_list({'provider': provider})
+                self.assertEqual(result['counts']['email'], 1)
+                self.assertEqual(len(result['items']), 1 if provider in ('email', None) else 0)
+        await self.app.external_information_ignore({'information_id': info['id']})
+        for provider in ('email', 'calendar', 'todo', 'notes'):
+            self.assertEqual((await self.app.external_information_list({'provider': provider}))['counts']['email'], 0)
+
     async def test_history_source_link_survives_completion_and_reports_deletion(self):
         source, _ = await self.source()
         action = (await self.app.tool_call('action_create', {'title': 'Follow up', 'source_type': 'connector_item', 'source_id': source['id']}, run_id=None, mode='normal'))['action']

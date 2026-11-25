@@ -5621,7 +5621,8 @@ class Application:
         provider = params.get("provider")
         state = str(params.get("status") or "pending")
         limit = max(1, min(int(params.get("limit", 100)), 500))
-        email_connection = await self.connector_service.get_connection("email") if provider in {None, "email"} else None
+        # Counts cover all providers, even when the selected list is non-email.
+        email_connection = await self.connector_service.get_connection("email")
         query = "SELECT * FROM external_information WHERE 1=1"
         args: list[Any] = []
         if provider:

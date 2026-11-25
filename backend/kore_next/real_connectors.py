@@ -963,6 +963,7 @@ class EmailAdapter:
                         "attachments": self._save_attachments(message, source_id),
                         "is_read": uid_value not in unseen,
                         "is_done": False,
+                        "sent_at": stamp.astimezone(UTC).isoformat().replace("+00:00", "Z"),
                         "updated_at": stamp.astimezone(UTC).isoformat().replace("+00:00", "Z"),
                         "created_at": stamp.astimezone(UTC).isoformat().replace("+00:00", "Z"),
                     }

@@ -713,6 +713,7 @@ class Application:
             "project.update": self.project_update,
             "project.archive": self.project_archive,
             "action.list": self.action_list,
+            "action.get": self.action_get,
             "action.create": self.action_create,
             "action.update": self.action_update,
             "action.complete": self.action_complete,
@@ -730,6 +731,7 @@ class Application:
             "connector.sync": self.connector_sync,
             "connector.inbox": self.connector_inbox,
             "connector.item.update": self.connector_item_update,
+            "connector.attachment.token": self.connector_attachment_token,
             "connector.item.delete": self.connector_item_delete,
             "connector.related": self.connector_related,
             "connector.events": self.connector_events,
@@ -4427,8 +4429,17 @@ class Application:
 
         calendar_events: list[dict[str, Any]] = []
         try:
-            calendar_result = await self.connector_service.inbox(provider="calendar", limit=20, calendar_period="future")
+            zone = ZoneInfo(str(profile.get("timezone") or "Asia/Shanghai"))
+            current = datetime.now(zone)
+            calendar_result = await self.connector_service.inbox(provider="calendar", limit=500, calendar_period="all")
             for item in calendar_result.get("items", []):
+                try:
+                    starts = datetime.fromisoformat(str(item.get("starts_at") or "").replace("Z", "+00:00"))
+                    starts = (starts if starts.tzinfo else starts.replace(tzinfo=zone)).astimezone(zone)
+                except ValueError:
+                    continue
+                if starts.date() != current.date() or starts < current or item.get("status") in {"cancelled", "deleted"}:
+                    continue
                 calendar_events.append(self._brief_item(
                     item,
                     ("id", "title", "summary", "description", "starts_at", "ends_at", "location", "is_done", "status"),
@@ -4511,7 +4522,7 @@ class Application:
         today = await self.personal_service.today(timezone=str(profile.get("timezone") or "Asia/Shanghai"))
         context = await self._daily_brief_context(today, profile)
         brief = await self.db.get_json(f"daily_brief:{today['date']}", None)
-        if not isinstance(brief, dict) or "ai_generated" not in brief:
+        if not isinstance(brief, dict) or "ai_generated" not in brief or brief.get("context") != context:
             brief = build_daily_brief(today, profile, context)
         else:
             fallback = build_daily_brief(today, profile, context)
@@ -4814,6 +4825,23 @@ class Application:
         items = await self.personal_service.actions(status=params.get("status"), due_date=params.get("due_date"), limit=int(params.get("limit", 100)))
         return {"actions": items, "count": len(items)}
 
+    async def action_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        action_id = str(required(params, "action_id"))
+        row = await self.db.fetchone("SELECT data_json FROM actions WHERE id=?", (action_id,))
+        if not row:
+            raise RpcFault(-32000, "Action not found")
+        links = await self.db.fetchall("SELECT source_type,source_id,relation FROM context_links WHERE target_type='action' AND target_id=?", (action_id,))
+        sources = []
+        for link in links:
+            kind = {"connector_item":"connector", "conversation":"conversation", "memory":"memory"}.get(link["source_type"])
+            if not kind:
+                continue
+            detail = await self.search_unified_detail({"source_type":kind, "entity_id":link["source_id"]})
+            source = detail.get("item") or detail.get("conversation") or detail.get("memory") or {}
+            sources.append({"type":kind, "id":link["source_id"], "relation":link["relation"],
+                            "found":detail.get("found",False), "title":source.get("title") or "来源已不可用"})
+        return {"action":loads(row["data_json"],{}), "sources":sources}
+
     async def action_create(self, params: dict[str, Any]) -> dict[str, Any]:
         due_at = params.get("due_at")
         if "due_local" in params:
@@ -4870,7 +4898,7 @@ class Application:
         today = await self.personal_service.today(timezone=str(profile.get("timezone") or "Asia/Shanghai"))
         context = await self._daily_brief_context(today, profile)
         brief = await self.db.get_json(f"daily_brief:{today['date']}", None)
-        if not isinstance(brief, dict) or "ai_generated" not in brief:
+        if not isinstance(brief, dict) or "ai_generated" not in brief or brief.get("context") != context:
             brief = build_daily_brief(today, profile, context)
         else:
             fallback = build_daily_brief(today, profile, context)
@@ -5447,6 +5475,13 @@ class Application:
         await self.broadcast("connector.item.deleted", result)
         return result
 
+    async def connector_attachment_token(self, params: dict[str, Any]) -> dict[str, Any]:
+        try:
+            token = await self.connector_service.issue_attachment_token(str(required(params, "attachment_id")))
+        except KeyError as exc:
+            raise RpcFault(-32000, "Attachment not found") from exc
+        return {"token":token, "expires_in":600}
+
     @staticmethod
     def _external_provider_key(kind: str, provider: str) -> str:
         if provider == "email" or kind == "email":
@@ -5520,7 +5555,9 @@ class Application:
         config = await self._role_model_config("summary")
         if config is not None and not (item.get("kind") == "todo" and item.get("is_done")):
             try:
-                reply = await ModelClient(self.settings, config).complete([{"role": "user", "content": analysis_prompt(item)}], [], [])
+                profile = await self.profile_service.get()
+                prompt_item = {**item, "_analysis_timezone":profile.get("timezone") or "Asia/Shanghai"}
+                reply = await ModelClient(self.settings, config).complete([{"role": "user", "content": analysis_prompt(prompt_item)}], [], [])
                 analysis = parse_analysis(reply.content, fallback)
             except Exception:
                 status = "analysis_failed"
@@ -5786,7 +5823,8 @@ class Application:
         config = await self._role_model_config("summary")
         if config is None:
             return {"message": "\u5f53\u524d\u672a\u542f\u7528\u5206\u6790\u6a21\u578b\uff0c\u8bf7\u76f4\u63a5\u7f16\u8f91\u5efa\u8bae\u884c\u52a8\u3002", "analysis": item.get("analysis") or {}, "item": item}
-        prompt = analysis_prompt(item.get("original") or {}) + f"\n\u7528\u6237\u5e0c\u671b\u4fee\u6539\u5f53\u524d\u5efa\u8bae\uff1a{message}\n\u8bf7\u8fd4\u56de\u540c\u6837\u7ed3\u6784\u7684 JSON\u3002"
+        profile = await self.profile_service.get()
+        prompt = analysis_prompt({**(item.get("original") or {}), "_analysis_timezone":profile.get("timezone") or "Asia/Shanghai"}) + f"\n\u7528\u6237\u5e0c\u671b\u4fee\u6539\u5f53\u524d\u5efa\u8bae\uff1a{message}\n\u8bf7\u8fd4\u56de\u540c\u6837\u7ed3\u6784\u7684 JSON\u3002"
         try:
             reply = await ModelClient(self.settings, config).complete([{"role": "user", "content": prompt}], [], [])
             analysis = structured_analysis(parse_analysis(reply.content, item.get("analysis") or default_analysis(item.get("original") or {})))
@@ -5794,8 +5832,8 @@ class Application:
             raise RpcFault(-32000, f"\u5206\u6790\u5931\u8d25\uff1a{str(exc)[:300]}") from exc
         stamp = now()
         await self.db.execute(
-            "UPDATE external_information SET relevance=?,status='needs_review',analysis_json=?,updated_at=?,analyzed_at=? WHERE id=?",
-            (str(analysis.get("relevance") or "needs_review"), dumps(analysis), stamp, stamp, information_id),
+            "UPDATE external_information SET relevance=?,status='needs_review',analysis_json=?,updated_at=?,analyzed_at=? WHERE id=? AND content_fingerprint=?",
+            (str(analysis.get("relevance") or "needs_review"), dumps(analysis), stamp, stamp, information_id, row["content_fingerprint"]),
         )
         await self.broadcast("external_information.updated", {"id": information_id, "status": "needs_review", "analysis": analysis})
         updated = await self.db.fetchone("SELECT * FROM external_information WHERE id=?", (information_id,))

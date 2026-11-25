@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { CalendarDays, Check, CheckSquare2, CircleDot, Eye, Inbox as InboxIcon, Link2, Mail, MessageSquare, NotebookPen, RefreshCw, Send, Trash2, Unplug } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { rpc } from './rpc'
-import { emailAttachmentTokenUrl, emailAttachmentUrl } from './apiConfig'
+import { emailAttachmentUrl } from './apiConfig'
 import { compactInboxPreview } from './inboxPresentation'
 import { EmptyState, ErrorState, LoadingState, PageHeader } from './ui'
 
@@ -75,6 +75,7 @@ export default function InboxView({ onOpenConversation, initialItemId }: { onOpe
   const [emailSyncDays, setEmailSyncDays] = useState('30')
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [detailItem, setDetailItem] = useState<InboxItem | null>(null)
+  const [sourceError,setSourceError]=useState('')
   const definitionsQuery = useQuery({
     queryKey: ['connector-definitions'],
     queryFn: () => rpc.call<{ connectors: ConnectorDefinition[] }>('connector.definitions').then(value => value.connectors),
@@ -149,16 +150,22 @@ export default function InboxView({ onOpenConversation, initialItemId }: { onOpe
     setDetailItem(item.is_read ? item : { ...item, is_read: true })
     if (!item.is_read) updateItem.mutate({ item_id: item.id, is_read: true })
   }
-  useEffect(() => {
-    if (!initialItemId || !items.length) return
-    const target = items.find(item => item.id === initialItemId)
-    if (target) openDetails(target)
-  }, [initialItemId, items.length])
+  useEffect(()=>{
+    if(!initialItemId)return
+    let current=true
+    setSourceError('')
+    void rpc.call<{found:boolean;item?:InboxItem;message?:string}>('search.unified.detail',{source_type:'connector',entity_id:initialItemId}).then(result=>{
+      if(!current)return
+      if(!result.found||!result.item){setSourceError(result.message||'来源已不存在');return}
+      setHistory(Boolean(result.item.is_done));setFilter(result.item.provider);setDetailItem(result.item)
+    }).catch(error=>{if(current)setSourceError(error instanceof Error?error.message:String(error))})
+    return()=>{current=false}
+  },[initialItemId])
   const busy = connectFeishu.isPending || sync.isPending || disconnect.isPending || updateItem.isPending || deleteItem.isPending || deleteSelected.isPending || markAllRead.isPending || markAllDone.isPending || markSelectedDone.isPending || emailConfigure.isPending
 
   return <section className="page">
     <PageHeader title="收件箱" subtitle="将邮箱、日历、任务和笔记汇总到一个可处理的信息流。" actions={<div className="row-actions"><button onClick={() => sync.mutate('new')} disabled={busy}><RefreshCw size={14} />{sync.isPending ? '同步中' : '同步全部'}</button>{filter === 'email' && connected.get('email')?.status === 'connected' && <button onClick={() => sync.mutate('older')} disabled={busy}><RefreshCw size={14} />加载更早邮件</button>}</div>} />
-    <div className="page-body">
+    <div className="page-body">{sourceError&&<p className="form-error" role="alert">{sourceError}</p>}
       {(definitionsQuery.error || inbox.error || connections.error) && <ErrorState error={definitionsQuery.error || inbox.error || connections.error} retry={() => { void definitionsQuery.refetch(); void inbox.refetch(); void connections.refetch() }} />}
       {(definitionsQuery.isPending || inbox.isPending || connections.isPending) && !items.length && <LoadingState label="正在读取信息中心…" />}
       <section className="connector-toolbar">
@@ -262,9 +269,7 @@ function InboxDetailDrawer({ item, definitions, onClose, onOpenConversation }: {
   async function downloadAttachment(id: string) {
     setDownloading(id); setDownloadError('')
     try {
-      const response = await fetch(emailAttachmentTokenUrl(id), { method: 'POST' })
-      if (!response.ok) throw new Error('无法生成附件下载链接')
-      const payload = await response.json() as { token: string }
+      const payload = await rpc.call<{token:string}>('connector.attachment.token',{attachment_id:id})
       window.open(`${emailAttachmentUrl(id)}?token=${encodeURIComponent(payload.token)}`, '_blank', 'noopener,noreferrer')
     } catch (error) {
       setDownloadError(error instanceof Error ? error.message : '附件下载失败')

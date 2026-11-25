@@ -11,6 +11,7 @@ import os
 import re
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import urlsplit
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
@@ -24,6 +25,14 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("koreagent_next.server")
 HEX_ID = re.compile(r"^[0-9a-f]{32}$")
 LOOPBACK = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+def trusted_local_origin(origin: str | None) -> bool:
+    # Native Electron file pages use null; non-browser local clients omit Origin.
+    if origin in (None, "", "null", "file://"):
+        return True
+    parsed = urlsplit(origin)
+    return parsed.scheme in {"http", "https"} and parsed.hostname in LOOPBACK and not parsed.username
 
 
 class Hub:
@@ -177,7 +186,7 @@ def create_app(application: Application | None = None) -> FastAPI:
 
     def require_local(request: Request) -> None:
         host = request.client.host if request.client else ""
-        if host not in LOOPBACK:
+        if host not in LOOPBACK or not trusted_local_origin(request.headers.get("origin")):
             raise HTTPException(403, "forbidden")
 
     @app.get("/artifacts/{artifact_id}/content")
@@ -284,6 +293,9 @@ def create_app(application: Application | None = None) -> FastAPI:
 
     @app.websocket("/rpc")
     async def rpc(ws: WebSocket) -> None:
+        if not ws.client or ws.client.host not in LOOPBACK or not trusted_local_origin(ws.headers.get("origin")):
+            await ws.close(code=1008)
+            return
         await ws.accept()
         await hub.add(ws)
         tasks: set[asyncio.Task[Any]] = set()

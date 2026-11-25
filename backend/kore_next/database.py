@@ -699,6 +699,7 @@ class Database:
         updated_at: str,
         result: Any = None,
         error: str | None = None,
+        reconcile_workflow: bool = False,
     ) -> None:
         if status not in {"succeeded", "failed", "uncertain", "partial_success"}:
             raise ValueError("invalid external operation status")
@@ -711,6 +712,8 @@ class Database:
             row = await (await db.execute("SELECT workflow_id FROM external_operations WHERE idempotency_key=?", (idempotency_key,))).fetchone()
             if row:
                 workflow_id = row["workflow_id"]
+                if reconcile_workflow:
+                    await self._reconcile_completed_connector_roots(db, workflow_id, updated_at)
                 rows = await (await db.execute("SELECT idempotency_key,status,arguments_json FROM external_operations WHERE workflow_id=?", (workflow_id,))).fetchall()
                 states = [item["status"] for item in self.effective_external_operations(list(rows))]
                 if "uncertain" in states or "running" in states:
@@ -723,11 +726,65 @@ class Database:
                     workflow_status = "partial_success"
                 elif "denied" in states:
                     workflow_status = "denied"
+                elif reconcile_workflow and states and all(state == "succeeded" for state in states):
+                    workflow_status = "completed"
                 else:
                     # A later tool call may still join this run-level workflow.
                     workflow_status = "in_progress"
                 await db.execute("UPDATE external_workflows SET status=?,updated_at=? WHERE id=?", (workflow_status, updated_at, workflow_id))
             await db.commit()
+
+    @staticmethod
+    async def _reconcile_completed_connector_roots(db: Any, workflow_id: str, updated_at: str) -> None:
+        """Reconcile a stopped parent from its exact planned steps, without replay.
+
+        Missing steps, ambiguous retry branches and active/denied parents must
+        never be turned into a completed operation by a provider lookup.
+        The caller holds the same transaction that updates the verified child.
+        """
+        rows = await (await db.execute("SELECT * FROM external_operations WHERE workflow_id=?", (workflow_id,))).fetchall()
+        by_id = {row["idempotency_key"]: row for row in rows}
+        arguments = {key: json.loads(row["arguments_json"] or "{}") for key, row in by_id.items()}
+        successors: dict[str, list[str]] = {}
+        for key, args in arguments.items():
+            previous = args.get("_retry_of")
+            if previous in by_id and previous != key:
+                successors.setdefault(previous, []).append(key)
+
+        def effective_child(key: str) -> Any:
+            seen: set[str] = set()
+            while key in successors:
+                if key in seen or len(successors[key]) != 1:
+                    return None
+                seen.add(key)
+                key = successors[key][0]
+            return by_id.get(key)
+
+        for root in rows:
+            if root["tool_name"] != "connector_workflow" or root["status"] not in {"partial_success", "uncertain", "failed"}:
+                continue
+            plan = arguments[root["idempotency_key"]].get("steps", [])
+            if not isinstance(plan, list) or not plan:
+                continue
+            steps = []
+            for index, step in enumerate(plan):
+                if not isinstance(step, dict):
+                    break
+                step_key = str(step.get("id") or index + 1)
+                child = effective_child(f"{root['idempotency_key']}:step:{step_key}")
+                if not child or child["status"] != "succeeded" or child["tool_name"] != step.get("tool"):
+                    break
+                steps.append({"step": step_key, "tool": child["tool_name"], "status": "succeeded",
+                              "result": json.loads(child["result_json"] or "null")})
+            if len(steps) != len(plan):
+                continue
+            result = json.loads(root["result_json"] or "{}")
+            result = result if isinstance(result, dict) else {}
+            result.update(status="completed", workflow_id=root["idempotency_key"], steps=steps)
+            await db.execute(
+                "UPDATE external_operations SET status='succeeded',result_json=?,error=NULL,updated_at=? WHERE idempotency_key=?",
+                (json.dumps(result, ensure_ascii=False), updated_at, root["idempotency_key"]),
+            )
 
     async def set_external_verification(
         self,

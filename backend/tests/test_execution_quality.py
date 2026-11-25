@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from kore_next.agent import ModelReply, ToolExecutor
-from kore_next.application import Application
+from kore_next.application import Application, RpcFault
 from kore_next.config import Settings
 from kore_next.execution_quality import explicitly_read_only
 from kore_next.file_processing import FileProcessingService
@@ -38,6 +38,25 @@ class ExecutionQualityTests(unittest.IsolatedAsyncioTestCase):
         server = SimpleNamespace(config={'enabled': True, 'permission': 'allowed', 'description': name}, error=None, tools=tools, request=AsyncMock(return_value={'content': []}))
         self.mcp.servers[name] = server
         return server
+
+    async def test_model_failure_explains_durable_external_outcomes(self):
+        cv = (await self.app.conversation_create({}))['conversation']['id']
+        run = await self.app._new_run(cv, '创建任务后总结', 'normal')
+        for key, status in [('created', 'succeeded'), ('uncertain', 'uncertain')]:
+            await self.app.prepare_external_operation(run['id'], key, 'feishu_task_create',
+                                                     {'title': key, 'idempotency_key': key})
+            await self.app.db.finish_external_operation(idempotency_key=key, status=status, updated_at=now(),
+                                                       result={'task': {'guid': 'task-confirmed'}} if status == 'succeeded' else None)
+        with patch('kore_next.application.ModelClient.complete', AsyncMock(side_effect=RuntimeError('model unavailable'))):
+            with self.assertRaises(RpcFault):
+                await self.app._execute_run(run)
+        saved = (await self.app.run_get({'run_id': run['id']}))['run']
+        self.assertEqual(saved['status'], 'failed')
+        self.assertIn('已成功', saved['error'])
+        self.assertIn('task-confirmed', saved['error'])
+        self.assertIn('结果未知', saved['error'])
+        messages = await self.app.db.fetchall("SELECT content FROM messages WHERE conversation_id=? AND role='assistant'", (cv,))
+        self.assertTrue(any('后续执行或收尾失败' in row['content'] for row in messages))
 
     async def test_catalog_disambiguates_and_paginates_without_permission_bypass(self):
         self.server('weather', [{'name': 'lookup', 'description': 'Weather query', 'inputSchema': {'type': 'object'}}])

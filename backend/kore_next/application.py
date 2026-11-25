@@ -3228,11 +3228,13 @@ class Application:
             raise
         except Exception as exc:
             stop_reason = exc.stop_reason if isinstance(exc, RuntimePolicyError) else "error"
+            effects = await self._failed_run_external_outcomes(run["id"])
+            failure_message = str(exc) + ("\n" + effects if effects else "")
             run.update(
                 status="failed",
                 updated_at=now(),
                 completed_at=now(),
-                error=str(exc),
+                error=failure_message,
                 stop_reason=stop_reason,
             )
             await self._save_run(run)
@@ -3244,21 +3246,59 @@ class Application:
             await self.db.finish_external_workflow(await self._external_workflow_id(run["id"]), run_status="failed", updated_at=now())
             if stop_reason == "run_budget":
                 final = "本次运行已达到模型调用或 Token 预算，已停止继续执行。已完成的操作保留，未完成事项不会被当作成功；可查看运行记录后调整预算并恢复。"
+                if effects:
+                    final += "\n" + effects
                 final_message = {"role": "assistant", "content": final}
                 await self._add_message(run["conversation_id"], final_message)
                 result = {"run_id": run["id"], "final_message": final_message, "messages": [], "steps": steps, "stop_reason": stop_reason, "usage": total, "error": str(exc)}
                 await self._event(run, "agent_completed", message=final_message, result=result, usage=total, stop_reason=stop_reason)
                 return result
+            failure_notice = None
+            if effects:
+                failure_notice = {"role": "assistant", "content": "后续执行或收尾失败，本次运行未全部完成。\n" + effects}
+                await self._add_message(run["conversation_id"], failure_notice)
             await self._event(
                 run,
                 "agent_failed",
-                message=None,
+                message=failure_notice,
                 tool_call=None,
                 tool_result=None,
                 usage=None,
-                error={"type": type(exc).__name__, "message": str(exc)},
+                error={"type": type(exc).__name__, "message": failure_message},
             )
-            raise RpcFault(-32603, "Agent run failed", {"run_id": run["id"], "message": str(exc)}) from exc
+            raise RpcFault(-32603, "Agent run failed", {"run_id": run["id"], "message": failure_message}) from exc
+
+    async def _failed_run_external_outcomes(self, run_id: str) -> str:
+        """Describe durable effects on failure without making another model call."""
+        try:
+            workflow_id = await self._external_workflow_id(run_id)
+            rows = await self.db.fetchall("SELECT * FROM external_operations WHERE workflow_id=? ORDER BY started_at", (workflow_id,))
+            known = self.db.effective_external_operations(rows)
+            succeeded, uncertain = [], []
+            for row in known:
+                if row["tool_name"] == "connector_workflow":
+                    continue
+                label = str(row["tool_name"])
+                result = loads(row["result_json"], {})
+                object_id = None
+                for kind, keys in (("task", ("guid", "task_id", "id")), ("event", ("event_id", "id")), ("document", ("document_id", "token", "id"))):
+                    if kind in label:
+                        object_id = self._created_object_id(result, kind, keys)
+                        break
+                label += f"（对象 ID：{object_id}）" if object_id else f"（操作 ID：{row['idempotency_key']}）"
+                if row["status"] == "succeeded":
+                    succeeded.append(label)
+                elif row["status"] in {"uncertain", "running"}:
+                    uncertain.append(label)
+            parts = []
+            if succeeded:
+                parts.append("已成功执行：" + "；".join(succeeded) + "。运行失败不会自动撤销这些操作。")
+            if uncertain:
+                parts.append("结果未知：" + "；".join(uncertain) + "。请先核实远端结果，不要直接重复执行。")
+            return "\n".join(parts)
+        except Exception:
+            # Preserve the original error even if the database itself failed.
+            return ""
 
     @staticmethod
     def _requires_reasoning_content(model_config: dict[str, Any]) -> bool:
@@ -6017,6 +6057,7 @@ class Application:
                 result=result,
                 error=None,
                 updated_at=now(),
+                reconcile_workflow=True,
             )
             await self.proactive.audit(
                 "connector.operation.verified",

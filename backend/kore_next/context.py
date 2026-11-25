@@ -321,24 +321,28 @@ class ContextManager:
             history = normalized[1:]
             keep_from = self._suffix_start(history, max(1_024, available // 2))
             older, recent = history[:keep_from], history[keep_from:]
-            if not older:
+            if not older and self.estimator.count_messages(normalized) + tool_schema_tokens > max_input:
                 raise ValueError("current tool round exceeds the input budget")
-            source = self._summary_source(older)
-            if len(source) > 24_000:
-                source = source[:12_000] + "\n...[older context clipped]...\n" + source[-12_000:]
-            try:
-                summary = (await summarizer(source, previous_summary or None)).strip() if summarizer else ""
-            except Exception:
-                summary = ""
-            if not self._valid_summary(summary, source):
-                summary = self._fallback_summary(source, previous_summary or None)
-            # A summary must also leave room for recent messages and tool schemas.
-            summary = summary[-min(12_000, max(1_000, available * 2)) :]
-            normalized = [
-                {**normalized[0], "content": base_system + "\n\nRun context summary:\n" + summary},
-                *recent,
-            ]
-            stage = "step_summary"
+            # The working target leaves headroom; only max_input is a hard
+            # ceiling. Do not fail a complete, affordable current round merely
+            # because there is no older prefix left to summarize.
+            if older:
+                source = self._summary_source(older)
+                if len(source) > 24_000:
+                    source = source[:12_000] + "\n...[older context clipped]...\n" + source[-12_000:]
+                try:
+                    summary = (await summarizer(source, previous_summary or None)).strip() if summarizer else ""
+                except Exception:
+                    summary = ""
+                if not self._valid_summary(summary, source):
+                    summary = self._fallback_summary(source, previous_summary or None)
+                # A summary must also leave room for recent messages and tool schemas.
+                summary = summary[-min(12_000, max(1_000, available * 2)) :]
+                normalized = [
+                    {**normalized[0], "content": base_system + "\n\nRun context summary:\n" + summary},
+                    *recent,
+                ]
+                stage = "step_summary"
         total = self.estimator.count_messages(normalized) + tool_schema_tokens
         if total > max_input:
             raise ValueError(f"step context exceeds input budget: {total} > {max_input}")

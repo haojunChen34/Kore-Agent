@@ -72,7 +72,7 @@ class McpProcess:
                 {
                     "protocolVersion": "2025-03-26",
                     "capabilities": {},
-                    "clientInfo": {"name": "koreagent-next", "version": "0.1.1"},
+                    "clientInfo": {"name": "koreagent-next", "version": "0.2.0"},
                 },
             )
             await self.notify("notifications/initialized", {})

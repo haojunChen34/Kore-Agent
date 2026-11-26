@@ -15,8 +15,6 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
-backend/tests/
-backend/tests/**
 docs/TEST_PLAN.md
 docs/TEST_REPORT.md
 .coverage

@@ -72,7 +72,7 @@ if (-not (Test-Path -LiteralPath $Python) -or -not (Test-Path -LiteralPath $Pip)
 
 $PreviousErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
-& $Python -c 'import fastapi, uvicorn, aiosqlite, cryptography, croniter, pypdf, openpyxl' 2>$null
+& $Python -c 'import fastapi, uvicorn, aiosqlite, cryptography, croniter, pypdf, openpyxl, jsonschema' 2>$null
 $BackendDependenciesReady = $LASTEXITCODE -eq 0
 $ErrorActionPreference = $PreviousErrorAction
 if (-not $BackendDependenciesReady) {

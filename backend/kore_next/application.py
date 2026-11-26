@@ -802,7 +802,7 @@ class Application:
         )
         return {
             "name": "KoreAgent Next",
-            "version": "0.1.1",
+            "version": "0.2.0",
             "provider": model_view.get("active_provider") or self.settings.provider,
             "model": model_view.get("active_model") or self.settings.model,
             "database": str(self.settings.database),
@@ -3554,18 +3554,28 @@ class Application:
     async def run_list(self, params: dict[str, Any]) -> dict[str, Any]:
         clauses, values = [], []
         if params.get("conversation_id"):
-            clauses.append("conversation_id=?")
+            clauses.append("runs.conversation_id=?")
             values.append(params["conversation_id"])
         if params.get("status"):
-            clauses.append("status=?")
+            clauses.append("runs.status=?")
             values.append(params["status"])
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         values.append(max(1, min(int(params.get("limit", 100)), 500)))
-        rows = await self.db.fetchall(f"SELECT * FROM runs{where} ORDER BY created_at DESC LIMIT ?", tuple(values))
+        rows = await self.db.fetchall(
+            "SELECT runs.*, recovery.child_run_id AS recovery_run_id, child.status AS recovery_status "
+            "FROM runs LEFT JOIN run_recoveries recovery ON recovery.source_run_id=runs.id "
+            "LEFT JOIN runs child ON child.id=recovery.child_run_id"
+            f"{where} ORDER BY runs.created_at DESC LIMIT ?", tuple(values),
+        )
         return {"runs": [self._run(r) for r in rows]}
 
     async def run_get(self, params: dict[str, Any]) -> dict[str, Any]:
-        row = await self.db.fetchone("SELECT * FROM runs WHERE id=?", (str(required(params, "run_id")),))
+        row = await self.db.fetchone(
+            "SELECT runs.*, recovery.child_run_id AS recovery_run_id, child.status AS recovery_status "
+            "FROM runs LEFT JOIN run_recoveries recovery ON recovery.source_run_id=runs.id "
+            "LEFT JOIN runs child ON child.id=recovery.child_run_id WHERE runs.id=?",
+            (str(required(params, "run_id")),),
+        )
         if not row:
             raise RpcFault(-32000, "Run not found")
         return {"run": self._run(row)}
@@ -3730,6 +3740,8 @@ class Application:
         )
         trace = {
             "run_id": run["id"],
+            "recovery_run_id": run["recovery_run_id"],
+            "recovery_status": run["recovery_status"],
             "conversation_id": run["conversation_id"],
             "status": run["status"],
             "started_at": run["started_at"] or run["created_at"],

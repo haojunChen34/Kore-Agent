@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 import tempfile
 import unittest
 from dataclasses import replace
@@ -78,7 +79,7 @@ class RunLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_recovery_transaction_rolls_back_all_records(self):
         run=await self.seed()
         await self.app.db.execute("CREATE TRIGGER reject_recovery BEFORE INSERT ON run_recoveries BEGIN SELECT RAISE(ABORT,'injected'); END")
-        with self.assertRaises(Exception):
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'injected'):
             await claim_recovery(self.app.db,run['id'],self.app.settings.workspace_dir)
         for table in ('runs','run_context','checkpoints'):
             self.assertEqual(len(await self.app.db.fetchall(f'SELECT * FROM {table}')),1)
@@ -97,6 +98,46 @@ class RunLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(grandchild['recovered_from_run_id'],child['id'])
         finally:
             second.db.release_lock()
+
+    async def test_recovery_link_is_available_in_list_detail_and_trace(self):
+        parent = await self.seed()
+        initial = (await self.app.run_get({'run_id': parent['id']}))['run']
+        self.assertIsNone(initial['recovery_run_id'])
+        child, _ = await claim_recovery(self.app.db, parent['id'], self.app.settings.workspace_dir)
+        # The child need not be in the same page/status-filter as its parent.
+        rows = (await self.app.run_list({'status': 'interrupted', 'limit': 1}))['runs']
+        self.assertEqual([r['id'] for r in rows], [parent['id']])
+        for record in (rows[0], (await self.app.run_get({'run_id': parent['id']}))['run'],
+                       (await self.app.trace_get({'run_id': parent['id']}))['trace']):
+            self.assertEqual(record['recovery_run_id'], child['id'])
+            self.assertEqual(record['recovery_status'], 'pending')
+        await self.app.db.execute("UPDATE runs SET status='completed' WHERE id=?", (child['id'],))
+        self.assertEqual((await self.app.run_get({'run_id': parent['id']}))['run']['recovery_status'], 'completed')
+        with self.assertRaises(RpcFault) as caught:
+            await self.app.run_recover({'run_id': parent['id']})
+        self.assertEqual(caught.exception.data, {'reason': 'already_recovered', 'run_id': child['id']})
+        self.assertEqual(len(await self.app.db.fetchall('SELECT * FROM runs')), 2)
+
+    async def test_deleted_successor_keeps_consumed_checkpoint_visible(self):
+        parent = await self.seed()
+        child, _ = await claim_recovery(self.app.db, parent['id'], self.app.settings.workspace_dir)
+        await self.app.db.execute("UPDATE runs SET status='completed' WHERE id=?", (child['id'],))
+        await self.app.run_delete({'run_id': child['id']})
+        for record in ((await self.app.run_get({'run_id': parent['id']}))['run'],
+                       (await self.app.trace_get({'run_id': parent['id']}))['trace']):
+            self.assertEqual(record['recovery_run_id'], child['id'])
+            self.assertIsNone(record['recovery_status'])
+        with self.assertRaisesRegex(RpcFault, '此检查点已恢复'):
+            await self.app.run_recover({'run_id': parent['id']})
+
+    async def test_recovery_join_preserves_conversation_and_status_filters(self):
+        parent = await self.seed()
+        await self.app.db.execute("UPDATE runs SET conversation_id='target' WHERE id=?", (parent['id'],))
+        await self.seed()
+        child, _ = await claim_recovery(self.app.db, parent['id'], self.app.settings.workspace_dir)
+        rows = (await self.app.run_list({'conversation_id': 'target', 'status': 'interrupted'}))['runs']
+        self.assertEqual([r['id'] for r in rows], [parent['id']])
+        self.assertEqual(rows[0]['recovery_run_id'], child['id'])
 
     async def test_pending_run_blocks_workspace_change(self):
         await self.seed('pending')
@@ -142,7 +183,7 @@ class RunLifecycleTests(unittest.IsolatedAsyncioTestCase):
         run=await self.seed('running')
         await self.approval(run)
         await self.app.db.execute("CREATE TRIGGER reject_card BEFORE UPDATE ON approvals BEGIN SELECT RAISE(ABORT,'injected'); END")
-        with self.assertRaises(Exception):
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'injected'):
             await self.app._resolve_approval('card',True,scope='global')
         self.assertEqual(len(await self.app.db.fetchall('SELECT * FROM permission_rules')),0)
         self.assertEqual((await self.app._approval_payload('card',redact_output=False))['status'],'pending')

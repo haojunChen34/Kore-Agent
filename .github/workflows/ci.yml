@@ -29,6 +29,9 @@ jobs:
       - name: Run Ruff
         run: ruff check kore_next
         working-directory: backend
+      - name: Run isolated regression tests
+        run: python -m unittest discover -s tests -v
+        working-directory: backend
       - name: Compile Python sources
         run: python -m compileall -q kore_next
         working-directory: backend
@@ -54,3 +57,15 @@ jobs:
       - name: Build desktop bundle
         run: npm run build
         working-directory: desktop
+      - name: Install test browser
+        run: npx playwright-core install --with-deps chromium
+        working-directory: desktop
+      - name: Check run recovery interactions
+        working-directory: desktop
+        shell: bash
+        run: |
+          node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 15186 --strictPort > "$RUNNER_TEMP/recovery-vite.log" 2>&1 &
+          TEST_VITE_PID=$!
+          trap 'kill "$TEST_VITE_PID" 2>/dev/null || true' EXIT
+          npx wait-on --timeout 30000 http-get://127.0.0.1:15186
+          npm run test:recovery

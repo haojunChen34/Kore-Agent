@@ -1,6 +1,6 @@
 ﻿export interface Conversation { id: string; title: string; created_at: string; updated_at: string; message_count: number }
 export interface Message { role: 'system'|'user'|'assistant'|'tool'; content: string|null; name?: string|null; reasoning?: string|null; tool_call_id?:string|null; tool_calls?:Array<{id:string;name:string;arguments:Record<string,unknown>}> }
-export interface Run { id:string; conversation_id:string|null; status:string; user_message:string; created_at:string; updated_at:string; error:string|null; stop_reason?:string|null; mode:'normal'|'plan'; source?:string|null; recovered_from_run_id?:string|null }
+export interface Run { id:string; conversation_id:string|null; status:string; user_message:string; created_at:string; updated_at:string; error:string|null; stop_reason?:string|null; mode:'normal'|'plan'; source?:string|null; recovered_from_run_id?:string|null; recovery_run_id?:string|null; recovery_status?:string|null }
 export interface Approval { id:string; run_id:string|null; conversation_id?:string|null; tool_name:string; arguments:Record<string,unknown>; preview?:Record<string,unknown>; reason:string; status:string; created_at:string; resolved_at?:string|null; resolution_scope?:PermissionScope; ui_scope?:string; available_scopes?:PermissionScope[] }
 export type PermissionScope='once'|'run'|'conversation'|'global'
 export interface Automation { id:string; title:string; prompt:string; goal_id?:string|null; status:string; schedule:{kind:string;run_at:string|null;interval_seconds:number|null;cron_expr:string|null;timezone:string}; next_run_at:string|null; last_run_at:string|null; last_run_id?:string|null }
@@ -68,6 +68,7 @@ export interface TraceEvent {
 }
 export interface RunTracePayload {
   trace:{run_id:string;conversation_id:string|null;status:string;started_at:string;completed_at:string|null;
+    recovery_run_id?:string|null;recovery_status?:string|null;
     provider:string;model:string;steps:number;stop_reason:string|null;input_tokens:number;output_tokens:number;
     total_tokens:number;event_count:number;research_report?:ResearchReport|null};
   events:TraceEvent[];usage_summary:RunUsageSummary;

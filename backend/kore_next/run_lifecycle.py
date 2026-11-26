@@ -28,7 +28,8 @@ async def claim_recovery(database: Database, run_id: str, workspace: Path) -> tu
             raise RpcFault(-32001, "Run is not recoverable")
         claimed = await (await db.execute("SELECT child_run_id FROM run_recoveries WHERE source_run_id=?", (run_id,))).fetchone()
         if claimed:
-            raise RpcFault(-32001, "此检查点已恢复，请查看或恢复已有的后续运行。", {"run_id": claimed["child_run_id"]})
+            raise RpcFault(-32001, "此检查点已恢复，请查看或恢复已有的后续运行。",
+                           {"reason": "already_recovered", "run_id": claimed["child_run_id"]})
         context = await (await db.execute("SELECT workspace_path FROM run_context WHERE run_id=?", (run_id,))).fetchone()
         if not context:
             raise RpcFault(-32001, "旧运行未记录工作区，无法安全恢复；请在原工作区重新发起任务。")
